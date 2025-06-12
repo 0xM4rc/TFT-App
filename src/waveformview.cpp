@@ -161,41 +161,30 @@ WaveformData WaveformView::downsampleChannel(const QVector<float> &samples, int 
     return result;
 }
 
-void WaveformView::paintEvent(QPaintEvent *event) {
+void WaveformView::paintEvent(QPaintEvent * /*event*/)
+{
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    // Verificar si necesitamos actualizar datos
+    // Verificar si necesitamos refrescar datos
     if (m_needsDataUpdate || width() != m_lastWidth) {
         m_lastWidth = width();
-        if (!m_updateTimer->isActive()) {
+        if (!m_updateTimer->isActive())
             m_updateTimer->start();
-        }
     }
 
-    // Dibujar elementos
+    // Fondo, grid, waveform, etc.
     drawBackground(painter);
 
     if (hasAudioData()) {
-        if (m_showGrid) {
-            drawGrid(painter);
-        }
-
+        if (m_showGrid)          drawGrid(painter);
         drawWaveform(painter);
-
-        if (m_hasSelection) {
-            drawSelection(painter);
-        }
-
-        if (m_showPlaybackCursor) {
-            drawPlaybackCursor(painter);
-        }
-
-        if (m_showTimeMarkers) {
-            drawTimeMarkers(painter);
-        }
+        if (m_hasSelection)      drawSelection(painter);
+        if (m_showPlaybackCursor)drawPlaybackCursor(painter);
+        if (m_showTimeMarkers)   drawTimeMarkers(painter);
     }
 }
+
 
 void WaveformView::drawBackground(QPainter &painter) {
     painter.fillRect(rect(), m_backgroundColor);
@@ -650,47 +639,55 @@ int WaveformView::amplitudeToPixel(double amplitude, int channelHeight) const {
 }
 
 // Eventos del mouse
-void WaveformView::mousePressEvent(QMouseEvent *event) {
-    if (!hasAudioData()) return;
+void WaveformView::mousePressEvent(QMouseEvent *event)
+{
+    if (!hasAudioData())
+        return;
+
+    const int mouseX = int(event->position().x());
 
     if (event->button() == Qt::LeftButton) {
-        m_mouseStartPos = event->pos();
+        m_mouseStartPos = event->position().toPoint();
         m_mouseMode = Selecting;
 
-        const double clickTime = pixelToTime(event->x()) / audioDurationSeconds();
+        double clickTime = pixelToTime(mouseX) / audioDurationSeconds();
         m_selectionStartTime = qBound(0.0, clickTime, 1.0);
 
         clearSelection();
         setFocus();
-    } else if (event->button() == Qt::RightButton) {
-        // Click derecho para posicionar cursor de reproducción
-        const double clickTime = pixelToTime(event->x()) / audioDurationSeconds();
+    }
+    else if (event->button() == Qt::RightButton) {
+        double clickTime = pixelToTime(mouseX) / audioDurationSeconds();
         emit playbackPositionClicked(qBound(0.0, clickTime, 1.0));
     }
 
     event->accept();
 }
 
-void WaveformView::mouseMoveEvent(QMouseEvent *event) {
-    if (!hasAudioData()) return;
+void WaveformView::mouseMoveEvent(QMouseEvent *event)
+{
+    if (!hasAudioData())
+        return;
+
+    const int mouseX = int(event->position().x());
 
     if (m_mouseMode == Selecting && (event->buttons() & Qt::LeftButton)) {
-        const double currentTime = pixelToTime(event->x()) / audioDurationSeconds();
-        const double clampedTime = qBound(0.0, currentTime, 1.0);
+        double currentTime = pixelToTime(mouseX) / audioDurationSeconds();
+        currentTime = qBound(0.0, currentTime, 1.0);
 
-        const double start = qMin(m_selectionStartTime, clampedTime);
-        const double end = qMax(m_selectionStartTime, clampedTime);
+        double start = qMin(m_selectionStartTime, currentTime);
+        double end   = qMax(m_selectionStartTime, currentTime);
 
-        if (qAbs(end - start) > 0.001) { // Selección mínima de 1ms
+        if (qAbs(end - start) > 0.001)
             setSelection(start, end);
-        }
-    } else if (m_mouseMode == Dragging && (event->buttons() & Qt::MiddleButton)) {
-        // Arrastrar para hacer scroll
-        const int deltaX = event->x() - m_mouseStartPos.x();
-        const double duration = audioDurationSeconds();
-        const double visibleDuration = duration / m_zoomLevel;
-        const double deltaTime = (static_cast<double>(deltaX) / width()) * visibleDuration;
-        const double newScrollPos = m_initialScrollPosition - (deltaTime / (duration - visibleDuration));
+    }
+    else if (m_mouseMode == Dragging && (event->buttons() & Qt::MiddleButton)) {
+        int deltaX = mouseX - m_mouseStartPos.x();
+        double duration         = audioDurationSeconds();
+        double visibleDuration  = duration / m_zoomLevel;
+        double deltaTime        = (double(deltaX) / width()) * visibleDuration;
+        double newScrollPos     = m_initialScrollPosition
+                              - (deltaTime / (duration - visibleDuration));
 
         setScrollPosition(newScrollPos);
     }
@@ -698,37 +695,36 @@ void WaveformView::mouseMoveEvent(QMouseEvent *event) {
     event->accept();
 }
 
-void WaveformView::mouseReleaseEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton && m_mouseMode == Selecting) {
+void WaveformView::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && m_mouseMode == Selecting)
         m_mouseMode = None;
-    } else if (event->button() == Qt::MiddleButton && m_mouseMode == Dragging) {
+    else if (event->button() == Qt::MiddleButton && m_mouseMode == Dragging)
         m_mouseMode = None;
-    }
 
     event->accept();
 }
 
-void WaveformView::wheelEvent(QWheelEvent *event) {
-    if (!hasAudioData()) return;
+void WaveformView::wheelEvent(QWheelEvent *event)
+{
+    if (!hasAudioData())
+        return;
 
-    const QPoint numDegrees = event->angleDelta() / 8;
-    const QPoint numSteps = numDegrees / 15;
+    const QPoint steps = event->angleDelta() / 120;  // 120 → 1 paso
 
-    if (!numSteps.isNull()) {
+    if (!steps.isNull()) {
         if (event->modifiers() & Qt::ControlModifier) {
-            // Zoom con Ctrl + rueda
-            const double zoomFactor = 1.0 + (numSteps.y() * 0.1);
-            const double newZoom = m_zoomLevel * zoomFactor;
-            setZoomLevel(newZoom);
+            // Zoom
+            double factor = 1.0 + (steps.y() * 0.1);
+            setZoomLevel(m_zoomLevel * factor);
         } else {
             // Scroll horizontal
-            const double duration = audioDurationSeconds();
-            const double visibleDuration = duration / m_zoomLevel;
-            const double scrollDelta = (numSteps.y() * 0.1) * (visibleDuration / duration);
+            double duration        = audioDurationSeconds();
+            double visibleDuration = duration / m_zoomLevel;
+            double scrollDelta     = steps.y() * 0.1 * (visibleDuration / duration);
             setScrollPosition(m_scrollPosition - scrollDelta);
         }
     }
-
     event->accept();
 }
 
@@ -821,3 +817,5 @@ void WaveformView::handleMouseRelease(QMouseEvent *event) {
     // Por ahora, redirige a mouseReleaseEvent
     mouseReleaseEvent(event);
 }
+
+

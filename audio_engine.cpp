@@ -1,6 +1,7 @@
 #include "include/audio_engine.h"
-#include <QtConcurrent>
+#include <QThread>
 #include <QDebug>
+#include <QUrl>
 
 AudioEngine::AudioEngine(QObject *parent) : QObject(parent) {
     connect(&m_decoder, &QAudioDecoder::bufferReady, this, &AudioEngine::handleBufferReady);
@@ -12,10 +13,10 @@ AudioEngine::~AudioEngine() {
 }
 
 bool AudioEngine::openFile(const QString &filePath) {
-    if (m_decoder.state() != QAudioDecoder::StoppedState)
+    if (m_decoder.isDecoding())
         m_decoder.stop();
 
-    m_decoder.setSourceFilename(filePath);
+    m_decoder.setSource(QUrl::fromLocalFile(filePath));
     m_decoder.start();
     if (m_decoder.error() != QAudioDecoder::NoError) {
         qWarning() << "AudioEngine: cannot start decoder:" << m_decoder.errorString();
@@ -33,7 +34,8 @@ void AudioEngine::handleBufferReady() {
         auto fmt = buffer.format();
         m_sampleRate = fmt.sampleRate();
         m_channels   = fmt.channelCount();
-        qint64 bytesPerFrame = fmt.bytesPerFrame();
+        // Remove unused variable warning
+        // qint64 bytesPerFrame = fmt.bytesPerFrame();
         // totalFrames gets refined when finished()
         emit streamInfoAvailable(m_sampleRate, 0);
     }
@@ -78,6 +80,7 @@ QVector<float> AudioEngine::requestWaveform(qint64 startFrame, qint64 frames, in
 
 // -------------------- DSP thread (spectrogram) ------------------
 static QImage tileFromFFT(const QVector<float> &mag, int width, int height) {
+    Q_UNUSED(mag) // Suppress unused parameter warning
     QImage img(width, height, QImage::Format_RGB32);
     img.fill(Qt::black);
     // TODO: map magnitudes to grayscale or colormap

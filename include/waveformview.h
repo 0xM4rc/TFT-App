@@ -110,6 +110,7 @@ public:
     bool hasAudioData() const { return !m_audioData.isEmpty(); }
     double audioDurationSeconds() const;
     int audioSampleRate() const;
+    int audioChannelCount() const { return hasAudioData() ? m_audioData.channelCount() : 0; }
 
     // Utilidades de conversión
     double pixelToTime(int pixel) const;

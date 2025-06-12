@@ -1,4 +1,4 @@
-QT       += core gui multimedia multimediawidgets
+QT       += core gui multimedia multimediawidgets widgets concurrent
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -13,6 +13,7 @@ SOURCES += \
     main.cpp \
     mainwindow.cpp \
     src/audio_loader.cpp \
+    src/waveformtestwindow.cpp \
     src/waveformview.cpp
 
 HEADERS += \
@@ -21,6 +22,7 @@ HEADERS += \
     include/data_structures/audio_input_config.h \
     include/data_structures/file_audio_data.h \
     include/data_structures/waveform_config.h \
+    include/waveformtestwindow.h \
     include/waveformview.h \
     mainwindow.h
 
