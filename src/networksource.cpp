@@ -1,0 +1,421 @@
+#include "include/network_source.h"
+#include <QDebug>
+#include <QDateTime>
+#include <QCoreApplication>
+
+NetworkSource::NetworkSource(QObject *parent)
+    : AudioSource(parent)
+    , m_pipeline(nullptr)
+    , m_source(nullptr)
+    , m_audioconvert(nullptr)
+    , m_audioresample(nullptr)
+    , m_appsink(nullptr)
+    , m_bus(nullptr)
+    , m_busWatchId(0)
+    , m_reconnectTimer(new QTimer(this))
+    , m_healthCheckTimer(new QTimer(this))
+    , m_reconnectAttempts(0)
+    , m_gstreamerInitialized(false)
+    , m_pipelineCreated(false)
+    , m_lastDataTime(0)
+{
+    // Configurar formato por defecto
+    m_format.setSampleRate(44100);
+    m_format.setChannelCount(1);
+    m_format.setSampleFormat(QAudioFormat::Int16);
+
+    // Configurar timers
+    m_reconnectTimer->setSingleShot(true);
+    connect(m_reconnectTimer, &QTimer::timeout, this, &NetworkSource::reconnectTimer);
+
+    m_healthCheckTimer->setInterval(HEALTH_CHECK_INTERVAL);
+    connect(m_healthCheckTimer, &QTimer::timeout, this, &NetworkSource::checkStreamHealth);
+
+    // Inicializar GStreamer
+    initializeGStreamer();
+}
+
+NetworkSource::~NetworkSource()
+{
+    stop();
+    destroyPipeline();
+
+    if (m_gstreamerInitialized) {
+        gst_deinit();
+    }
+}
+
+void NetworkSource::initializeGStreamer()
+{
+    if (m_gstreamerInitialized) return;
+
+    GError *error = nullptr;
+    if (!gst_init_check(nullptr, nullptr, &error)) {
+        qCritical() << "Failed to initialize GStreamer:" << (error ? error->message : "Unknown error");
+        if (error) g_error_free(error);
+        return;
+    }
+
+    m_gstreamerInitialized = true;
+    qDebug() << "GStreamer initialized successfully";
+}
+
+void NetworkSource::createPipeline()
+{
+    if (!m_gstreamerInitialized || m_pipelineCreated) return;
+
+    // Crear pipeline
+    m_pipeline = gst_pipeline_new("audio-network-pipeline");
+    if (!m_pipeline) {
+        qCritical() << "Failed to create GStreamer pipeline";
+        return;
+    }
+
+    // Crear elementos
+    m_source = gst_element_factory_make("uridecodebin", "source");
+    m_audioconvert = gst_element_factory_make("audioconvert", "audioconvert");
+    m_audioresample = gst_element_factory_make("audioresample", "audioresample");
+    m_appsink = gst_element_factory_make("appsink", "appsink");
+
+    if (!m_source || !m_audioconvert || !m_audioresample || !m_appsink) {
+        qCritical() << "Failed to create GStreamer elements";
+        destroyPipeline();
+        return;
+    }
+
+    // Configurar appsink
+    GstCaps *caps = gst_caps_new_simple("audio/x-raw",
+                                        "format", G_TYPE_STRING, "S16LE",
+                                        "rate", G_TYPE_INT, m_format.sampleRate(),
+                                        "channels", G_TYPE_INT, m_format.channelCount(),
+                                        nullptr);
+
+    g_object_set(m_appsink,
+                 "caps", caps,
+                 "emit-signals", TRUE,
+                 "sync", FALSE,
+                 "max-buffers", 100,
+                 "drop", TRUE,
+                 nullptr);
+
+    gst_caps_unref(caps);
+
+    // Conectar callbacks
+    GstAppSinkCallbacks callbacks = {
+        NetworkSource::onEos,
+        nullptr, // on_new_preroll
+        NetworkSource::onNewSample,
+        {nullptr} // _gst_reserved - inicializar campos reservados
+    };
+    gst_app_sink_set_callbacks(GST_APP_SINK(m_appsink), &callbacks, this, nullptr);
+
+    // Conectar pad-added signal para uridecodebin
+    g_signal_connect(m_source, "pad-added", G_CALLBACK(NetworkSource::onPadAdded), this);
+
+    // Agregar elementos al pipeline
+    gst_bin_add_many(GST_BIN(m_pipeline),
+                     m_source, m_audioconvert, m_audioresample, m_appsink, nullptr);
+
+    // Enlazar elementos (audioconvert -> audioresample -> appsink)
+    if (!gst_element_link_many(m_audioconvert, m_audioresample, m_appsink, nullptr)) {
+        qCritical() << "Failed to link GStreamer elements";
+        destroyPipeline();
+        return;
+    }
+
+    // Configurar bus
+    m_bus = gst_element_get_bus(m_pipeline);
+    m_busWatchId = gst_bus_add_watch(m_bus, NetworkSource::onBusMessage, this);
+
+    m_pipelineCreated = true;
+    qDebug() << "GStreamer pipeline created successfully";
+}
+
+void NetworkSource::destroyPipeline()
+{
+    if (!m_pipelineCreated) return;
+
+    if (m_pipeline) {
+        gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        gst_object_unref(m_pipeline);
+        m_pipeline = nullptr;
+    }
+
+    if (m_bus) {
+        if (m_busWatchId > 0) {
+            g_source_remove(m_busWatchId);
+            m_busWatchId = 0;
+        }
+        gst_object_unref(m_bus);
+        m_bus = nullptr;
+    }
+
+    m_source = nullptr;
+    m_audioconvert = nullptr;
+    m_audioresample = nullptr;
+    m_appsink = nullptr;
+    m_pipelineCreated = false;
+
+    qDebug() << "GStreamer pipeline destroyed";
+}
+
+void NetworkSource::start()
+{
+    if (m_active || m_streamUrl.isEmpty() || !m_gstreamerInitialized) return;
+
+    createPipeline();
+    if (!m_pipelineCreated) return;
+
+    // Configurar URL
+    g_object_set(m_source, "uri", m_streamUrl.toString().toUtf8().constData(), nullptr);
+
+    // Iniciar pipeline
+    GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        qCritical() << "Failed to start GStreamer pipeline";
+        destroyPipeline();
+        return;
+    }
+
+    m_active = true;
+    m_reconnectAttempts = 0;
+    m_lastDataTime = QDateTime::currentMSecsSinceEpoch();
+    m_healthCheckTimer->start();
+
+    emit stateChanged(true);
+    qDebug() << "Network source started with URL:" << m_streamUrl.toString();
+}
+
+void NetworkSource::stop()
+{
+    if (!m_active) return;
+
+    m_reconnectTimer->stop();
+    m_healthCheckTimer->stop();
+
+    destroyPipeline();
+
+    m_active = false;
+    m_reconnectAttempts = 0;
+
+    // Limpiar buffer
+    QMutexLocker locker(&m_bufferMutex);
+    m_buffer.clear();
+
+    emit stateChanged(false);
+    qDebug() << "Network source stopped";
+}
+
+bool NetworkSource::isActive() const
+{
+    if (!m_active || !m_pipeline) return false;
+
+    GstState state;
+    gst_element_get_state(m_pipeline, &state, nullptr, 0);
+    return state == GST_STATE_PLAYING;
+}
+
+QByteArray NetworkSource::getData()
+{
+    QMutexLocker locker(&m_bufferMutex);
+    QByteArray data = std::move(m_buffer);
+    m_buffer.clear();
+    return data;
+}
+
+QAudioFormat NetworkSource::format() const
+{
+    return m_format;
+}
+
+QString NetworkSource::sourceName() const
+{
+    return QString("Network:%1").arg(m_streamUrl.toString());
+}
+
+void NetworkSource::setUrl(const QUrl &url)
+{
+    if (m_active) {
+        qWarning() << "Cannot change URL while active";
+        return;
+    }
+    m_streamUrl = url;
+}
+
+void NetworkSource::setStreamFormat(const QAudioFormat &format)
+{
+    if (m_active) {
+        qWarning() << "Cannot change format while active";
+        return;
+    }
+    m_format = format;
+}
+
+void NetworkSource::reconnectTimer()
+{
+    if (m_active && m_gstreamerInitialized) {
+        qDebug() << "Attempting to reconnect...";
+
+        // Recrear pipeline
+        destroyPipeline();
+        createPipeline();
+
+        if (m_pipelineCreated) {
+            g_object_set(m_source, "uri", m_streamUrl.toString().toUtf8().constData(), nullptr);
+
+            GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
+            if (ret != GST_STATE_CHANGE_FAILURE) {
+                m_lastDataTime = QDateTime::currentMSecsSinceEpoch();
+                m_healthCheckTimer->start();
+                qDebug() << "Reconnection successful";
+                return;
+            }
+        }
+
+        // Si falló la reconexión
+        handleReconnection();
+    }
+}
+
+void NetworkSource::checkStreamHealth()
+{
+    if (!m_active) return;
+
+    qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
+    if (currentTime - m_lastDataTime > STREAM_TIMEOUT) {
+        qWarning() << "Stream timeout detected, attempting reconnection";
+        handleReconnection();
+    }
+}
+
+void NetworkSource::handleReconnection()
+{
+    if (m_reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        m_reconnectAttempts++;
+        int delay = m_reconnectAttempts * 2000; // Exponential backoff
+
+        qDebug() << "Scheduling reconnection in" << delay << "ms (attempt" << m_reconnectAttempts << ")";
+
+        m_healthCheckTimer->stop();
+        if (m_pipeline) {
+            gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        }
+
+        m_reconnectTimer->start(delay);
+    } else {
+        qWarning() << "Max reconnection attempts reached";
+        stop();
+        emit error("Max reconnection attempts reached");
+    }
+}
+
+// Static callbacks
+GstFlowReturn NetworkSource::onNewSample(GstAppSink *sink, gpointer user_data)
+{
+    NetworkSource *source = static_cast<NetworkSource*>(user_data);
+
+    GstSample *sample = gst_app_sink_pull_sample(sink);
+    if (!sample) return GST_FLOW_ERROR;
+
+    GstBuffer *buffer = gst_sample_get_buffer(sample);
+    if (buffer) {
+        GstMapInfo map;
+        if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+            {
+                QMutexLocker locker(&source->m_bufferMutex);
+                source->m_buffer.append(reinterpret_cast<const char*>(map.data), map.size);
+            }
+
+            source->m_lastDataTime = QDateTime::currentMSecsSinceEpoch();
+            emit source->dataReady();
+
+            gst_buffer_unmap(buffer, &map);
+        }
+    }
+
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+}
+
+void NetworkSource::onEos(GstAppSink *sink, gpointer user_data)
+{
+    Q_UNUSED(sink)
+    NetworkSource *source = static_cast<NetworkSource*>(user_data);
+    qDebug() << "End of stream reached";
+    source->handleReconnection();
+}
+
+gboolean NetworkSource::onBusMessage(GstBus *bus, GstMessage *message, gpointer user_data)
+{
+    Q_UNUSED(bus)
+    NetworkSource *source = static_cast<NetworkSource*>(user_data);
+
+    switch (GST_MESSAGE_TYPE(message)) {
+    case GST_MESSAGE_ERROR: {
+        GError *error;
+        gchar *debug;
+        gst_message_parse_error(message, &error, &debug);
+
+        QString errorMsg = QString("GStreamer error: %1").arg(error->message);
+        qCritical() << errorMsg;
+        if (debug) {
+            qDebug() << "Debug info:" << debug;
+        }
+
+        emit source->error(errorMsg);
+        source->handleReconnection();
+
+        g_error_free(error);
+        g_free(debug);
+        break;
+    }
+    case GST_MESSAGE_WARNING: {
+        GError *error;
+        gchar *debug;
+        gst_message_parse_warning(message, &error, &debug);
+
+        qWarning() << "GStreamer warning:" << error->message;
+        if (debug) {
+            qDebug() << "Debug info:" << debug;
+        }
+
+        g_error_free(error);
+        g_free(debug);
+        break;
+    }
+    case GST_MESSAGE_EOS:
+        qDebug() << "End of stream";
+        source->handleReconnection();
+        break;
+    default:
+        break;
+    }
+
+    return TRUE;
+}
+
+void NetworkSource::onPadAdded(GstElement *element, GstPad *pad, gpointer user_data)
+{
+    Q_UNUSED(element)
+    NetworkSource *source = static_cast<NetworkSource*>(user_data);
+
+    GstCaps *caps = gst_pad_get_current_caps(pad);
+    if (!caps) return;
+
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+    const gchar *name = gst_structure_get_name(structure);
+
+    if (g_str_has_prefix(name, "audio/")) {
+        GstPad *sinkpad = gst_element_get_static_pad(source->m_audioconvert, "sink");
+        if (sinkpad && !gst_pad_is_linked(sinkpad)) {
+            if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK) {
+                qWarning() << "Failed to link audio pad";
+            } else {
+                qDebug() << "Audio pad linked successfully";
+            }
+        }
+        if (sinkpad) gst_object_unref(sinkpad);
+    }
+
+    gst_caps_unref(caps);
+}
