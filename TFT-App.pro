@@ -18,18 +18,29 @@ PKGCONFIG += gstreamer-audio-1.0
 SOURCES += \
     main.cpp \
     mainwindow.cpp \
-    src/audiobuffer.cpp \
-    src/audioprocessor.cpp \
+    src/audio_manager.cpp \
+    src/audio_processor.cpp \
+    src/audio_visualizer.cpp \
     src/audiosource.cpp \
+    src/gui/control_panel.cpp \
+    src/gui/rt_mainwindow.cpp \
     src/microphone_source.cpp \
-    src/networksource.cpp
+    src/networksource.cpp \
+    src/spectrogram_widget.cpp \
+    src/waveform_widget.cpp
 
 HEADERS += \
+    include/audio_manager.h \
+    include/audio_processor.h \
+    include/audio_visualizer.h \
+    include/data_structures/visualization_data.h \
+    include/gui/control_panel.h \
+    include/gui/rt_mainwindow.h \
     include/mock_waveformview.h \
+    include/spectrogram_widget.h \
+    include/waveform_widget.h \
     mainwindow.h \
-    include/audiobuffer.h \
     include/audiochunk.h \
-    include/audioprocessor.h \
     include/interfaces/audio_source.h \
     include/microphone_source.h \
     include/network_source.h

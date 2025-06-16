@@ -3,6 +3,21 @@
 #include <QDateTime>
 #include <QCoreApplication>
 
+// HOW TO USE
+// NetworkSource *source = new NetworkSource();
+// source->setUrl(QUrl("http://stream.example.com/audio"));
+
+// // Conectar señal para saber cuando se detecta el formato
+// connect(source, &NetworkSource::formatDetected, [](const QAudioFormat &format) {
+//     qDebug() << "Formato detectado automáticamente:";
+//     qDebug() << "Sample Rate:" << format.sampleRate();
+//     qDebug() << "Canales:" << format.channelCount();
+//     qDebug() << "Formato:" << format.sampleFormat();
+// });
+
+// source->start();
+
+
 NetworkSource::NetworkSource(QObject *parent)
     : AudioSource(parent)
     , m_pipeline(nullptr)
@@ -18,10 +33,11 @@ NetworkSource::NetworkSource(QObject *parent)
     , m_gstreamerInitialized(false)
     , m_pipelineCreated(false)
     , m_lastDataTime(0)
+    , m_formatDetected(false)
 {
-    // Configurar formato por defecto
+    // Configurar formato por defecto (fallback)
     m_format.setSampleRate(44100);
-    m_format.setChannelCount(1);
+    m_format.setChannelCount(2);
     m_format.setSampleFormat(QAudioFormat::Int16);
 
     // Configurar timers
@@ -83,29 +99,20 @@ void NetworkSource::createPipeline()
         return;
     }
 
-    // Configurar appsink
-    GstCaps *caps = gst_caps_new_simple("audio/x-raw",
-                                        "format", G_TYPE_STRING, "S16LE",
-                                        "rate", G_TYPE_INT, m_format.sampleRate(),
-                                        "channels", G_TYPE_INT, m_format.channelCount(),
-                                        nullptr);
-
+    // Configurar appsink básico (sin caps específicas aún)
     g_object_set(m_appsink,
-                 "caps", caps,
                  "emit-signals", TRUE,
                  "sync", FALSE,
                  "max-buffers", 100,
                  "drop", TRUE,
                  nullptr);
 
-    gst_caps_unref(caps);
-
     // Conectar callbacks
     GstAppSinkCallbacks callbacks = {
         NetworkSource::onEos,
-        nullptr, // on_new_preroll
+        nullptr,
         NetworkSource::onNewSample,
-        {nullptr} // _gst_reserved - inicializar campos reservados
+        {nullptr}
     };
     gst_app_sink_set_callbacks(GST_APP_SINK(m_appsink), &callbacks, this, nullptr);
 
@@ -116,7 +123,7 @@ void NetworkSource::createPipeline()
     gst_bin_add_many(GST_BIN(m_pipeline),
                      m_source, m_audioconvert, m_audioresample, m_appsink, nullptr);
 
-    // Enlazar elementos (audioconvert -> audioresample -> appsink)
+    // Enlazar elementos estáticos
     if (!gst_element_link_many(m_audioconvert, m_audioresample, m_appsink, nullptr)) {
         qCritical() << "Failed to link GStreamer elements";
         destroyPipeline();
@@ -128,6 +135,7 @@ void NetworkSource::createPipeline()
     m_busWatchId = gst_bus_add_watch(m_bus, NetworkSource::onBusMessage, this);
 
     m_pipelineCreated = true;
+    m_formatDetected = false;  // Reset detection flag
     qDebug() << "GStreamer pipeline created successfully";
 }
 
@@ -225,7 +233,8 @@ QByteArray NetworkSource::getData()
 
 QAudioFormat NetworkSource::format() const
 {
-    return m_format;
+    QMutexLocker locker(&const_cast<NetworkSource*>(this)->m_formatMutex);
+    return m_formatDetected ? m_detectedFormat : m_format;
 }
 
 QString NetworkSource::sourceName() const
@@ -400,22 +409,139 @@ void NetworkSource::onPadAdded(GstElement *element, GstPad *pad, gpointer user_d
     NetworkSource *source = static_cast<NetworkSource*>(user_data);
 
     GstCaps *caps = gst_pad_get_current_caps(pad);
-    if (!caps) return;
+    if (!caps) {
+        qWarning() << "No caps available on pad";
+        return;
+    }
 
     GstStructure *structure = gst_caps_get_structure(caps, 0);
     const gchar *name = gst_structure_get_name(structure);
 
+    qDebug() << "Pad added with caps:" << gst_caps_to_string(caps);
+
     if (g_str_has_prefix(name, "audio/")) {
+        qDebug() << "Audio pad detected, analyzing format...";
+
+        // DETECTAR Y ACTUALIZAR FORMATO
+        source->updateFormatFromCaps(caps);
+
+        // CONFIGURAR APPSINK CON FORMATO DETECTADO
+        source->configureAppSinkWithDetectedFormat();
+
+        // ENLAZAR PAD
         GstPad *sinkpad = gst_element_get_static_pad(source->m_audioconvert, "sink");
         if (sinkpad && !gst_pad_is_linked(sinkpad)) {
-            if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK) {
-                qWarning() << "Failed to link audio pad";
+            GstPadLinkReturn linkResult = gst_pad_link(pad, sinkpad);
+            if (linkResult != GST_PAD_LINK_OK) {
+                qWarning() << "Failed to link audio pad, error:" << linkResult;
             } else {
-                qDebug() << "Audio pad linked successfully";
+                qDebug() << "Audio pad linked successfully with auto-detected format";
+                emit source->formatDetected(source->m_format);  // Nueva señal
             }
         }
         if (sinkpad) gst_object_unref(sinkpad);
+    } else {
+        qDebug() << "Non-audio pad ignored:" << name;
     }
 
     gst_caps_unref(caps);
+}
+
+
+void NetworkSource::updateFormatFromCaps(GstCaps *caps)
+{
+    if (!caps) return;
+
+    QMutexLocker locker(&m_formatMutex);
+
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+    if (!structure) return;
+
+    // Detectar sample rate
+    gint rate = 44100;  // default
+    if (gst_structure_get_int(structure, "rate", &rate)) {
+        m_detectedFormat.setSampleRate(rate);
+        qDebug() << "Detected sample rate:" << rate;
+    }
+
+    // Detectar canales
+    gint channels = 2;  // default
+    if (gst_structure_get_int(structure, "channels", &channels)) {
+        m_detectedFormat.setChannelCount(channels);
+        qDebug() << "Detected channels:" << channels;
+    }
+
+    // Detectar formato
+    const gchar *format = gst_structure_get_string(structure, "format");
+    if (format) {
+        QString qtFormat = gstFormatToQtFormat(format);
+        if (!qtFormat.isEmpty()) {
+            if (qtFormat == "Int16") {
+                m_detectedFormat.setSampleFormat(QAudioFormat::Int16);
+            } else if (qtFormat == "Int32") {
+                m_detectedFormat.setSampleFormat(QAudioFormat::Int32);
+            } else if (qtFormat == "Float") {
+                m_detectedFormat.setSampleFormat(QAudioFormat::Float);
+            }
+            qDebug() << "Detected format:" << format << "-> Qt format:" << qtFormat;
+        }
+    }
+
+    // Actualizar formato principal
+    m_format = m_detectedFormat;
+    m_formatDetected = true;
+
+    qDebug() << "Final detected format:"
+             << "Rate:" << m_format.sampleRate()
+             << "Channels:" << m_format.channelCount()
+             << "Format:" << m_format.sampleFormat();
+}
+
+void NetworkSource::configureAppSinkWithDetectedFormat()
+{
+    if (!m_appsink || !m_formatDetected) return;
+
+    // Convertir formato Qt a GStreamer
+    QString gstFormat = "S16LE";  // default
+    switch (m_format.sampleFormat()) {
+    case QAudioFormat::Int16:
+        gstFormat = "S16LE";
+        break;
+    case QAudioFormat::Int32:
+        gstFormat = "S32LE";
+        break;
+    case QAudioFormat::Float:
+        gstFormat = "F32LE";
+        break;
+    default:
+        gstFormat = "S16LE";
+        break;
+    }
+
+    // Crear caps con formato detectado
+    GstCaps *caps = gst_caps_new_simple("audio/x-raw",
+                                        "format", G_TYPE_STRING, gstFormat.toUtf8().constData(),
+                                        "rate", G_TYPE_INT, m_format.sampleRate(),
+                                        "channels", G_TYPE_INT, m_format.channelCount(),
+                                        nullptr);
+
+    g_object_set(m_appsink, "caps", caps, nullptr);
+    gst_caps_unref(caps);
+
+    qDebug() << "AppSink configured with detected format:" << gstFormat
+             << m_format.sampleRate() << "Hz," << m_format.channelCount() << "ch";
+}
+
+QString NetworkSource::gstFormatToQtFormat(const gchar* gstFormat)
+{
+    if (!gstFormat) return QString();
+
+    QString format(gstFormat);
+
+    if (format.startsWith("S16")) return "Int16";
+    if (format.startsWith("S32")) return "Int32";
+    if (format.startsWith("F32")) return "Float";
+    if (format.startsWith("F64")) return "Float";
+
+    return "Int16";  // default fallback
 }

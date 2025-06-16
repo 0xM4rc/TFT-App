@@ -1,6 +1,5 @@
 #ifndef NETWORK_SOURCE_H
 #define NETWORK_SOURCE_H
-
 #include "include/interfaces/audio_source.h"
 #include <QObject>
 #include <QTimer>
@@ -13,6 +12,9 @@
 class NetworkSource : public AudioSource
 {
     Q_OBJECT
+
+signals:
+    void formatDetected(const QAudioFormat &format);
 
 public:
     explicit NetworkSource(QObject *parent = nullptr);
@@ -40,6 +42,11 @@ private:
     void createPipeline();
     void destroyPipeline();
     void handleReconnection();
+
+    // NEW: Auto-detection methods
+    void updateFormatFromCaps(GstCaps *caps);
+    void configureAppSinkWithDetectedFormat();
+    QString gstFormatToQtFormat(const gchar* gstFormat);
 
     // Static callbacks for GStreamer
     static GstFlowReturn onNewSample(GstAppSink *sink, gpointer user_data);
@@ -73,6 +80,11 @@ private:
     qint64 m_lastDataTime;
     static const int HEALTH_CHECK_INTERVAL = 5000; // 5 seconds
     static const int STREAM_TIMEOUT = 10000; // 10 seconds without data
+
+    // NEW: Format detection state
+    QAudioFormat m_detectedFormat;
+    bool m_formatDetected;
+    QMutex m_formatMutex;
 };
 
 #endif // NETWORK_SOURCE_H

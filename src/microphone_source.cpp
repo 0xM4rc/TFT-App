@@ -7,13 +7,12 @@ MicrophoneSource::MicrophoneSource(QObject *parent)
     , m_audioSource(nullptr)
     , m_inputDevice(nullptr)
     , m_device(QMediaDevices::defaultAudioInput())
-    , m_readTimer(new QTimer(this))
+    , m_readTimer(std::make_unique<QTimer>(this))
 {
     initializeFormat();
-
     // Timer para leer datos periódicamente
     m_readTimer->setInterval(10); // 10ms
-    connect(m_readTimer, &QTimer::timeout, this, &MicrophoneSource::handleAudioData);
+    connect(m_readTimer.get(), &QTimer::timeout, this, &MicrophoneSource::handleAudioData);
 }
 
 MicrophoneSource::~MicrophoneSource()
@@ -36,10 +35,10 @@ void MicrophoneSource::start()
 
     try {
         // En Qt6, usamos QAudioSource en lugar de QAudioInput para captura de bajo nivel
-        m_audioSource = new QAudioSource(m_device, m_format, this);
+        m_audioSource = std::make_unique<QAudioSource>(m_device, m_format, this);
 
         // Conectar señales de error y estado
-        connect(m_audioSource, &QAudioSource::stateChanged,
+        connect(m_audioSource.get(), &QAudioSource::stateChanged,
                 this, &MicrophoneSource::handleStateChanged);
 
         // Iniciar la captura de audio
@@ -66,8 +65,7 @@ void MicrophoneSource::stop()
 
     if (m_audioSource) {
         m_audioSource->stop();
-        delete m_audioSource;
-        m_audioSource = nullptr;
+        m_audioSource.reset(); // En lugar de delete
     }
 
     m_inputDevice = nullptr;
@@ -148,6 +146,7 @@ void MicrophoneSource::setDevice(const QAudioDevice &device)
         qWarning() << "Cannot change device while active";
         return;
     }
+
     m_device = device;
     initializeFormat();
 }
@@ -158,5 +157,6 @@ void MicrophoneSource::setFormat(const QAudioFormat &format)
         qWarning() << "Cannot change format while active";
         return;
     }
+
     m_format = format;
 }
