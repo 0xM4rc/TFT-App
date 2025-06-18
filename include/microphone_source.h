@@ -43,6 +43,10 @@ public:
     void setVolume(qreal volume);
     qreal volume() const;
 
+    // Identificadores de interfaz
+    SourceType sourceType() const override { return SourceType::Microphone; }
+    QString    sourceId()   const override { return m_device.id(); }
+
 private slots:
     void handleAudioData();
     void handleStateChanged(QAudio::State state);

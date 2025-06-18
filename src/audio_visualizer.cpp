@@ -212,10 +212,6 @@ void AudioVisualizer::setupStatusBar()
     statusLayout->setSpacing(8);
 
     // Labels de información
-    m_formatLabel = new QLabel("Formato: --", this);
-    statusLayout->addWidget(m_formatLabel);
-
-    statusLayout->addWidget(new QLabel("|", this));
 
     m_fpsLabel = new QLabel("FPS: --", this);
     statusLayout->addWidget(m_fpsLabel);
@@ -375,8 +371,8 @@ void AudioVisualizer::setAudioManager(AudioManager* manager)
     if (m_audioManager) {
         connect(m_audioManager, &AudioManager::visualizationDataReady,
                 this, &AudioVisualizer::handleVisualizationData);
-        connect(m_audioManager, &AudioManager::formatChanged,
-                this, &AudioVisualizer::handleFormatChanged);
+        // connect(m_audioManager, &AudioManager::formatChanged,
+        //         this, &AudioVisualizer::handleFormatChanged);
         connect(m_audioManager, &AudioManager::processingStarted,
                 this, &AudioVisualizer::handleProcessingStarted);
         connect(m_audioManager, &AudioManager::processingStopped,
@@ -707,18 +703,18 @@ void AudioVisualizer::handleVisualizationData(const VisualizationData& data)
     updateVisualization(data);
 }
 
-void AudioVisualizer::handleFormatChanged(const QAudioFormat& format)
-{
-    // Profundidad de bits = bytesPorMuestra * 8
-    const int bitsPerSample = format.bytesPerSample() * 8;
+// void AudioVisualizer::handleFormatChanged(const QAudioFormat& format)
+// {
+//     // Profundidad de bits = bytesPorMuestra * 8
+//     const int bitsPerSample = format.bytesPerSample() * 8;
 
-    QString formatText = QString("%1 Hz, %2-bit, %3")
-                             .arg(format.sampleRate())
-                             .arg(bitsPerSample)
-                             .arg(format.channelCount() == 1 ? "Mono" : "Estéreo");
+//     QString formatText = QString("%1 Hz, %2-bit, %3")
+//                              .arg(format.sampleRate())
+//                              .arg(bitsPerSample)
+//                              .arg(format.channelCount() == 1 ? "Mono" : "Estéreo");
 
-    m_formatLabel->setText(tr("Formato: %1").arg(formatText));
-}
+//     m_formatLabel->setText(tr("Formato: %1").arg(formatText));
+// }
 
 
 void AudioVisualizer::handleProcessingStarted()

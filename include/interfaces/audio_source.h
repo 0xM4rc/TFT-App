@@ -5,6 +5,8 @@
 #include <QByteArray>
 #include <QAudioFormat>
 
+enum class SourceType { Microphone, Network}; // Identificador tipo de interfaz
+
 class AudioSource : public QObject
 {
     Q_OBJECT
@@ -20,10 +22,14 @@ public:
     virtual QAudioFormat format() const = 0;
     virtual QString sourceName() const = 0;
 
+    // Identificadores de interfaz
+    virtual SourceType sourceType() const = 0;
+    virtual QString    sourceId()   const = 0;
 signals:
-    void dataReady();
-    void error(const QString &errorString);
-    void stateChanged(bool active);
+    void dataReady(SourceType type, const QString& id);
+    void stateChanged(SourceType type, const QString& id, bool active);
+    void error(SourceType type, const QString& id, const QString& msg);
+
 
 protected:
     QAudioFormat m_format;

@@ -155,7 +155,6 @@ protected:
 private slots:
     // Slots para AudioManager
     void handleVisualizationData(const VisualizationData& data);
-    void handleFormatChanged(const QAudioFormat& format);
     void handleProcessingStarted();
     void handleProcessingStopped();
     void handleStatisticsUpdated(double cpuLoad, qint64 totalSamples, double avgLatency);
@@ -256,7 +255,6 @@ private:
     QPushButton* m_screenshotButton;
 
     // Status bar
-    QLabel* m_formatLabel;
     QLabel* m_fpsLabel;
     QLabel* m_cpuLoadLabel;
     QLabel* m_samplesLabel;

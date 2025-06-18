@@ -1,49 +1,70 @@
 #ifndef CONTROL_PANEL_H
 #define CONTROL_PANEL_H
 
+#pragma once
+
 #include <QWidget>
-#include <QStringList>
+#include <QAudioDevice>
 
-class QPushButton;
 class QComboBox;
-class QLabel;
+class QLineEdit;
+class QStackedWidget;
+class QPushButton;
 
+/**
+ * ControlPanel ofrece:
+ *  - Selección de tipo de fuente (Physical / Network)
+ *  - Selector de dispositivo físico (combo) o URL de red (line-edit)
+ *  - Controles de reproducción: Start, Pause, Stop
+ *  - Botón de Settings
+ *
+ * Puedes inyectar un dispositivo inicial y recuperar el actualmente seleccionado.
+ */
 class ControlPanel : public QWidget
 {
     Q_OBJECT
 public:
+    enum SourceType { Physical = 0, Network = 1 };
+
     explicit ControlPanel(QWidget* parent = nullptr);
+    explicit ControlPanel(const QAudioDevice& initialDevice, QWidget* parent = nullptr);
 
-    /**
-     * @brief Populate the source selector.
-     * @param sources List of user‑friendly source names (e.g., "Microphone", "Network Stream"…)
-     */
-    void setAvailableSources(const QStringList& sources);
-
-    /**
-     * @brief Programmatically select the given index without emitting sourceChanged.
-     */
-    void selectSource(int index);
+    /// Establece el dispositivo físico inicialmente seleccionado
+    void setInitialPhysicalDevice(const QAudioDevice& dev);
+    /// Devuelve el dispositivo físico actualmente seleccionado
+    QAudioDevice currentPhysicalDevice() const;
+    /// Devuelve la URL introducida
+    QString networkUrl() const;
 
 signals:
-    void startRequested();   //!< User pressed ▶️
-    void pauseRequested();   //!< User pressed ⏸️
-    void stopRequested();    //!< User pressed ⏹️
-    void settingsRequested();//!< User pressed ⚙️
-    void sourceChanged(int index);
+    void sourceTypeChanged(int type);
+    void physicalDeviceChanged(const QAudioDevice& device);
+    void networkUrlChanged(const QString& url);
+
+    void startRequested();
+    void pauseRequested();
+    void stopRequested();
+    void settingsRequested();
 
 private slots:
-    void handleSourceIndexChanged(int index);
+    void switchSourceUi(int index);
 
 private:
     void buildUi();
     void applyStyle();
 
-    QPushButton* m_btnStart;
-    QPushButton* m_btnPause;
-    QPushButton* m_btnStop;
-    QPushButton* m_btnSettings;
-    QComboBox*   m_cmbSources;
+    QAudioDevice    m_initialDevice;
+    bool            m_hasInitialDevice = false;
+
+    QComboBox*      m_cmbSourceType  { nullptr };
+    QStackedWidget* m_stack          { nullptr };
+    QComboBox*      m_cmbDevices     { nullptr };  // DeviceComboBox subclass
+    QLineEdit*      m_leNetworkUrl   { nullptr };
+
+    QPushButton*    m_btnStart       { nullptr };
+    QPushButton*    m_btnPause       { nullptr };
+    QPushButton*    m_btnStop        { nullptr };
+    QPushButton*    m_btnSettings    { nullptr };
 };
 
 #endif // CONTROL_PANEL_H

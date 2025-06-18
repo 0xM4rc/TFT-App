@@ -47,13 +47,13 @@ void MicrophoneSource::start()
         if (m_inputDevice) {
             m_readTimer->start();
             m_active = true;
-            emit stateChanged(true);
+            emit stateChanged(sourceType(), sourceId(), m_active);
             qDebug() << "Microphone started successfully";
         } else {
-            emit error("Failed to start audio input device");
+            emit error(sourceType(), sourceId(),"Failed to start audio input device");
         }
     } catch (const std::exception &e) {
-        emit error(QString("Exception starting microphone: %1").arg(e.what()));
+        emit error(sourceType(), sourceId(), QString("Exception starting microphone: %1").arg(e.what()));
     }
 }
 
@@ -70,7 +70,7 @@ void MicrophoneSource::stop()
 
     m_inputDevice = nullptr;
     m_active = false;
-    emit stateChanged(false);
+    emit stateChanged(sourceType(), sourceId(), m_active);
     qDebug() << "Microphone stopped";
 }
 
@@ -103,7 +103,7 @@ void MicrophoneSource::handleAudioData()
     QByteArray data = m_inputDevice->readAll();
     if (!data.isEmpty()) {
         m_buffer.append(data);
-        emit dataReady();
+        emit dataReady(sourceType(), sourceId());
     }
 }
 
@@ -115,13 +115,13 @@ void MicrophoneSource::handleStateChanged(QAudio::State state)
     case QAudio::ActiveState:
         if (!m_active) {
             m_active = true;
-            emit stateChanged(true);
+            emit stateChanged(sourceType(), sourceId(), m_active);
         }
         break;
     case QAudio::StoppedState:
         if (m_active) {
             m_active = false;
-            emit stateChanged(false);
+            emit stateChanged(sourceType(), sourceId(), m_active);
         }
         break;
     case QAudio::IdleState:
@@ -136,7 +136,7 @@ void MicrophoneSource::handleStateChanged(QAudio::State state)
 void MicrophoneSource::handleErrorOccurred()
 {
     if (m_audioSource) {
-        emit error(QString("Audio source error: %1").arg(m_audioSource->error()));
+        emit error(sourceType(), sourceId(),QString("Audio source error: %1").arg(m_audioSource->error()));
     }
 }
 

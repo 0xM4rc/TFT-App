@@ -2,28 +2,36 @@
 #define RT_MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QComboBox>
+#include <QAudioFormat>
+#include <QAudioSource>
+#include <QAudioSink>
+#include <QMediaDevices>
+#include <QTimer>
+#include <QIODevice>
+#include "include/waveform_widget.h"
 
-class ControlPanel;
-class WaveformWidget;
-class SpectrogramWidget;
-
-/**
- * @brief Ventana principal puramente visual (sin lógica ni conexiones).
- */
-class RTMainWindow : public QMainWindow
-{
+class RTMainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit RTMainWindow(QWidget* parent = nullptr);
-    ~RTMainWindow() override = default;
+    ~RTMainWindow() override;
+
+private slots:
+    void onDeviceChanged(int index);
+    void readAudioData();
 
 private:
     void setupUi();
 
-    // Componentes UI
-    ControlPanel*      m_controlPanel{nullptr};
-    WaveformWidget*    m_waveformWidget{nullptr};
-    SpectrogramWidget* m_spectrogramWidget{nullptr};
+    QComboBox*            m_combo;
+    QVector<QAudioDevice> m_devices;
+    QAudioFormat          m_format;
+    QAudioSource*         m_audioSource = nullptr;
+    QAudioSink*           m_audioSink   = nullptr;
+    QIODevice*            m_io          = nullptr;
+    QTimer                m_readTimer;
+    WaveformWidget*       m_waveform;
 };
 
 #endif // RT_MAINWINDOW_H

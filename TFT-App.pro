@@ -26,8 +26,10 @@ SOURCES += \
     src/gui/rt_mainwindow.cpp \
     src/microphone_source.cpp \
     src/networksource.cpp \
+    src/source_controller.cpp \
     src/spectrogram_widget.cpp \
-    src/waveform_widget.cpp
+    src/waveform_widget.cpp \
+    tests/audio_tester.cpp
 
 HEADERS += \
     include/audio_manager.h \
@@ -36,14 +38,15 @@ HEADERS += \
     include/data_structures/visualization_data.h \
     include/gui/control_panel.h \
     include/gui/rt_mainwindow.h \
-    include/mock_waveformview.h \
+    include/source_controller.h \
     include/spectrogram_widget.h \
     include/waveform_widget.h \
     mainwindow.h \
     include/audiochunk.h \
     include/interfaces/audio_source.h \
     include/microphone_source.h \
-    include/network_source.h
+    include/network_source.h \
+    tests/audio_tester.h
 
 FORMS += \
     mainwindow.ui

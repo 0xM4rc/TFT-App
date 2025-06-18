@@ -1,140 +1,164 @@
-#include <QApplication>
-#include <QDebug>
-#include <QUrl>
-#include <QAudioSink>
-#include <QAudioFormat>
-#include <QMediaDevices>
-#include <QTimer>
+// #include <QApplication>
+// #include "include/gui/rt_mainwindow.h"
 
-#include "include/gui/rt_mainwindow.h"
-#include "include/network_source.h"
+// int main(int argc, char *argv[])
+// {
+//     QApplication app(argc, argv);
+//     RTMainWindow w;
+//     w.setWindowTitle("RT Audio Test");
+//     w.resize(800, 400);
+//     w.show();
+//     return app.exec();
+// }
+
+
+
+#include <QCoreApplication>
+#include <QTimer>
+#include <iostream>
+#include "tests/audio_tester.h"
+
+void showMenu()
+{
+    std::cout << "\n=== AUDIO SOURCE TESTER ===" << std::endl;
+    std::cout << "1. Full test (all sources + switching)" << std::endl;
+    std::cout << "2. Microphone only" << std::endl;
+    std::cout << "3. Network stream only" << std::endl;
+    std::cout << "4. Source switching test" << std::endl;
+    std::cout << "5. Exit" << std::endl;
+    std::cout << "Enter your choice (1-5): ";
+}
 
 int main(int argc, char *argv[])
 {
-    // 1) QApplication para habilitar la GUI
-    QApplication app(argc, argv);
+    QCoreApplication app(argc, argv);
 
-    qDebug() << "=== TEST NETWORK SOURCE CON AUTO-DETECCIÓN Y GUI ===";
+    // Verificar argumentos de línea de comandos
+    if (argc > 1) {
+        QString arg1 = argv[1];
 
-    // 2) Instanciar y mostrar RTMainWindow
-    RTMainWindow window;
-    window.setWindowTitle(QObject::tr("Real-Time Audio Visualizer"));
-    window.resize(1024, 600);
-    window.show();
+        AudioTester tester;
 
-    // 3) Lógica original de NetworkSource + QAudioSink
-    NetworkSource src;
-
-    QAudioSink*  audioSink       = nullptr;
-    QIODevice*   audioDevice     = nullptr;
-    bool         audioInitialized = false;
-
-    auto cleanupAudio = [&]() {
-        if (audioSink) {
-            audioSink->stop();
-            delete audioSink;
-            audioSink       = nullptr;
-            audioDevice     = nullptr;
-            audioInitialized = false;
-            qDebug() << "Audio sink limpiado";
-        }
-    };
-
-    auto initializeAudio = [&](const QAudioFormat &detectedFormat) {
-        if (audioInitialized) return;
-
-        qDebug() << "Inicializando audio con formato detectado:";
-        qDebug() << "  Sample Rate:" << detectedFormat.sampleRate() << "Hz";
-        qDebug() << "  Canales:"    << detectedFormat.channelCount();
-        qDebug() << "  Formato:"    << detectedFormat.sampleFormat();
-
-        QAudioDevice defaultDev = QMediaDevices::defaultAudioOutput();
-        QAudioFormat audioFormat = detectedFormat;
-
-        if (!defaultDev.isFormatSupported(audioFormat)) {
-            qWarning() << "Formato detectado no soportado, usando preferido";
-            audioFormat = defaultDev.preferredFormat();
+        // Configurar URL personalizada si se proporciona
+        if (argc > 2) {
+            tester.setNetworkUrl(argv[2]);
+            std::cout << "Using custom URL: " << argv[2] << std::endl;
         }
 
-        audioSink   = new QAudioSink(defaultDev, audioFormat, &app);
-        audioSink->setBufferSize(16384);
-        audioDevice = audioSink->start();
-        if (!audioDevice) {
-            qCritical() << "ERROR: No se pudo iniciar el dispositivo de audio";
-            delete audioSink;
-            audioSink = nullptr;
-            return;
-        }
-
-        audioInitialized = true;
-        qDebug() << "✓ Audio sink inicializado correctamente;"
-                 << "Buffer size:" << audioSink->bufferSize();
-    };
-
-    // Conexiones idénticas a tu main original
-    QObject::connect(&src, &NetworkSource::stateChanged, [&](bool active) {
-        qDebug() << ">>> Stream estado:" << (active ? "ACTIVO" : "PARADO");
-        if (!active) cleanupAudio();
-    });
-
-    QObject::connect(&src, &NetworkSource::error, [&](const QString &err) {
-        qCritical() << ">>> ERROR de stream:" << err;
-        cleanupAudio();
-    });
-
-    QObject::connect(&src, &NetworkSource::formatDetected, [&](const QAudioFormat &fmt) {
-        qDebug() << ">>> FORMATO DETECTADO:";
-        initializeAudio(fmt);
-    });
-
-    QObject::connect(&src, &NetworkSource::dataReady, [&]() {
-        QByteArray chunk = src.getData();
-        if (chunk.isEmpty()) return;
-
-        if (!audioInitialized) {
-            qDebug() << "Usando formato fallback";
-            initializeAudio(src.format());
-        }
-
-        if (audioDevice && audioSink && audioSink->state() != QAudio::StoppedState) {
-            qint64 written = audioDevice->write(chunk);
-            if (written < 0) {
-                qWarning() << "Error al escribir audio:" << written;
+        // Configurar duración personalizada si se proporciona
+        if (argc > 3) {
+            bool ok;
+            int duration = QString(argv[3]).toInt(&ok);
+            if (ok && duration > 0) {
+                tester.setTestDuration(duration);
+                std::cout << "Using custom duration: " << duration << " seconds" << std::endl;
             }
         }
-    });
 
-    // URL de streaming (argumento o por defecto)
-    QUrl streamUrl = (argc > 1)
-                         ? QUrl::fromUserInput(argv[1])
-                         : QUrl("http://stream.radioparadise.com/rock-flac");
-    src.setUrl(streamUrl);
-    src.start();
+        // Conectar señales
+        QObject::connect(&tester, &AudioTester::testCompleted, [&]() {
+            std::cout << "\n🎉 Test completed successfully!" << std::endl;
+            QTimer::singleShot(1000, &app, &QCoreApplication::quit);
+        });
 
-    // Estadísticas periódicas
-    QTimer statsTimer(&app);
-    QObject::connect(&statsTimer, &QTimer::timeout, [&]() {
-        if (src.isActive()) {
-            qDebug() << "--- ESTADÍSTICAS ---";
-            qDebug() << "Stream activo:" << src.isActive()
-                     << "Fuente:" << src.sourceName();
-            if (audioSink) {
-                qDebug() << "Audio estado:"    << audioSink->state()
-                << "Buffer libre:"     << audioSink->bytesFree()
-                << "Procesados(ms):"   << audioSink->processedUSecs()/1000;
-            }
+        QObject::connect(&tester, &AudioTester::testFailed, [&](const QString& reason) {
+            std::cout << "\n💥 Test failed: " << reason.toStdString() << std::endl;
+            QTimer::singleShot(1000, &app, &QCoreApplication::quit);
+        });
+
+        // Ejecutar test según argumento
+        if (arg1 == "full" || arg1 == "1") {
+            tester.testBothSources();
+        } else if (arg1 == "mic" || arg1 == "2") {
+            tester.testMicrophoneOnly();
+        } else if (arg1 == "net" || arg1 == "3") {
+            tester.testNetworkOnly();
+        } else if (arg1 == "switch" || arg1 == "4") {
+            tester.testSourceSwitching();
+        } else {
+            std::cout << "Usage: " << argv[0] << " [full|mic|net|switch] [url] [duration_seconds]" << std::endl;
+            std::cout << "Examples:" << std::endl;
+            std::cout << "  " << argv[0] << " full" << std::endl;
+            std::cout << "  " << argv[0] << " mic" << std::endl;
+            std::cout << "  " << argv[0] << " net http://example.com/stream.mp3 10" << std::endl;
+            return 1;
         }
-    });
-    statsTimer.start(10000);
 
-    // Cleanup al cerrar la app
-    QObject::connect(&app, &QCoreApplication::aboutToQuit, [&]() {
-        qDebug() << "Deteniendo stream...";
-        src.stop();
-        cleanupAudio();
-        qDebug() << "Aplicación terminada";
+        return app.exec();
+    }
+
+    // Modo interactivo
+    AudioTester tester;
+
+    // Conectar señales para modo interactivo
+    QObject::connect(&tester, &AudioTester::testCompleted, [&]() {
+        std::cout << "\n🎉 Test completed! Starting another test in 3 seconds..." << std::endl;
+        QTimer::singleShot(3000, []() {
+            showMenu();
+        });
     });
 
-    // 4) Arrancar el bucle de eventos de Qt (GUI + streaming)
+    QObject::connect(&tester, &AudioTester::testFailed, [&](const QString& reason) {
+        std::cout << "\n💥 Test failed: " << reason.toStdString() << std::endl;
+        std::cout << "Restarting menu in 3 seconds..." << std::endl;
+        QTimer::singleShot(3000, []() {
+            showMenu();
+        });
+    });
+
+    // Mostrar menú inicial
+    showMenu();
+
+    // Simular entrada de usuario (en un caso real usarías std::cin)
+    // Por simplicidad, ejecutamos el test completo después de 2 segundos
+    QTimer::singleShot(2000, [&]() {
+        std::cout << "Auto-starting full test..." << std::endl;
+        tester.startTest();
+    });
+
     return app.exec();
 }
+
+// Versión con entrada real del usuario (opcional)
+/*
+#include <QTextStream>
+#include <QSocketNotifier>
+
+class MenuHandler : public QObject
+{
+    Q_OBJECT
+public:
+    MenuHandler(AudioTester* tester) : m_tester(tester) {
+        m_notifier = new QSocketNotifier(fileno(stdin), QSocketNotifier::Read, this);
+        connect(m_notifier, &QSocketNotifier::activated, this, &MenuHandler::readInput);
+        showMenu();
+    }
+
+private slots:
+    void readInput() {
+        QTextStream stream(stdin);
+        QString input = stream.readLine();
+
+        if (input == "1") {
+            m_tester->startTest();
+        } else if (input == "2") {
+            m_tester->testMicrophoneOnly();
+        } else if (input == "3") {
+            m_tester->testNetworkOnly();
+        } else if (input == "4") {
+            m_tester->testSourceSwitching();
+        } else if (input == "5") {
+            QCoreApplication::quit();
+        } else {
+            std::cout << "Invalid choice. Please try again." << std::endl;
+            showMenu();
+        }
+    }
+
+private:
+    AudioTester* m_tester;
+    QSocketNotifier* m_notifier;
+};
+
+#include "main.moc"
+*/

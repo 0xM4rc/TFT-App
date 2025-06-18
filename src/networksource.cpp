@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 
 // HOW TO USE
 // NetworkSource *source = new NetworkSource();
@@ -18,7 +19,7 @@
 // source->start();
 
 
-NetworkSource::NetworkSource(QObject *parent)
+NetworkSource::NetworkSource(const QUrl &url, QObject *parent)
     : AudioSource(parent)
     , m_pipeline(nullptr)
     , m_source(nullptr)
@@ -27,6 +28,7 @@ NetworkSource::NetworkSource(QObject *parent)
     , m_appsink(nullptr)
     , m_bus(nullptr)
     , m_busWatchId(0)
+    , m_streamUrl(url)
     , m_reconnectTimer(new QTimer(this))
     , m_healthCheckTimer(new QTimer(this))
     , m_reconnectAttempts(0)
@@ -35,6 +37,14 @@ NetworkSource::NetworkSource(QObject *parent)
     , m_lastDataTime(0)
     , m_formatDetected(false)
 {
+    // setup de id
+    // ID: MD5 de la URL
+    QByteArray raw = url.toString().toUtf8();
+    m_sourceId = QCryptographicHash::hash(raw, QCryptographicHash::Md5).toHex();
+
+    // Para mostrar al usuario, puedes recortar la URL:
+    m_sourceName = url.toString(QUrl::RemoveUserInfo | QUrl::RemoveScheme);
+
     // Configurar formato por defecto (fallback)
     m_format.setSampleRate(44100);
     m_format.setChannelCount(2);
@@ -190,7 +200,7 @@ void NetworkSource::start()
     m_lastDataTime = QDateTime::currentMSecsSinceEpoch();
     m_healthCheckTimer->start();
 
-    emit stateChanged(true);
+    emit stateChanged(sourceType(), sourceId(), m_active);
     qDebug() << "Network source started with URL:" << m_streamUrl.toString();
 }
 
@@ -210,7 +220,7 @@ void NetworkSource::stop()
     QMutexLocker locker(&m_bufferMutex);
     m_buffer.clear();
 
-    emit stateChanged(false);
+    emit stateChanged(sourceType(), sourceId(), m_active);
     qDebug() << "Network source stopped";
 }
 
@@ -235,11 +245,6 @@ QAudioFormat NetworkSource::format() const
 {
     QMutexLocker locker(&const_cast<NetworkSource*>(this)->m_formatMutex);
     return m_formatDetected ? m_detectedFormat : m_format;
-}
-
-QString NetworkSource::sourceName() const
-{
-    return QString("Network:%1").arg(m_streamUrl.toString());
 }
 
 void NetworkSource::setUrl(const QUrl &url)
@@ -314,7 +319,7 @@ void NetworkSource::handleReconnection()
     } else {
         qWarning() << "Max reconnection attempts reached";
         stop();
-        emit error("Max reconnection attempts reached");
+        emit error(sourceType(), sourceId(),"Max reconnection attempts reached");
     }
 }
 
@@ -336,7 +341,7 @@ GstFlowReturn NetworkSource::onNewSample(GstAppSink *sink, gpointer user_data)
             }
 
             source->m_lastDataTime = QDateTime::currentMSecsSinceEpoch();
-            emit source->dataReady();
+            emit source->dataReady(source->sourceType(), source->sourceId());
 
             gst_buffer_unmap(buffer, &map);
         }
@@ -371,7 +376,7 @@ gboolean NetworkSource::onBusMessage(GstBus *bus, GstMessage *message, gpointer 
             qDebug() << "Debug info:" << debug;
         }
 
-        emit source->error(errorMsg);
+        emit source->error(source->sourceType(), source->sourceId(), errorMsg);
         source->handleReconnection();
 
         g_error_free(error);
@@ -436,7 +441,7 @@ void NetworkSource::onPadAdded(GstElement *element, GstPad *pad, gpointer user_d
                 qWarning() << "Failed to link audio pad, error:" << linkResult;
             } else {
                 qDebug() << "Audio pad linked successfully with auto-detected format";
-                emit source->formatDetected(source->m_format);  // Nueva señal
+                emit source->formatDetected(source->sourceType(), source->sourceId(), source->m_format);  // Nueva señal
             }
         }
         if (sinkpad) gst_object_unref(sinkpad);
