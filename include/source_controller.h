@@ -1,8 +1,15 @@
+#ifndef SOURCE_CONTROLLER_H
+#define SOURCE_CONTROLLER_H
+
 #include <QObject>
 #include <QHash>
-#include <QString>
 #include <QAudioFormat>
-#include "interfaces/audio_source.h"
+#include <QAudioDevice>
+#include <QUrl>
+#include "include/interfaces/audio_source.h"
+
+class NetworkSource;
+class MicrophoneSource;
 
 class SourceController : public QObject
 {
@@ -12,47 +19,65 @@ public:
     explicit SourceController(QObject* parent = nullptr);
     ~SourceController();
 
+    // Métodos para agregar fuentes (thread-safe)
+    QString addNetworkSource(const QUrl& url);
+    bool addMicrophoneSource(const QString& key, const QAudioDevice& device = QAudioDevice());
+
     // Gestión de fuentes
-    void addSource(const QString& key, AudioSource* source);
     void removeSource(const QString& key);
     bool setActiveSource(const QString& key);
 
-    // Control básico
+    // Control de reproducción
     void start();
     void stop();
 
-    // Consultas de estado
-    QString activeSourceKey() const { return m_activeKey; }
-    AudioSource* activeSource() const { return m_sources.value(m_activeKey, nullptr); }
-    QStringList availableSources() const { return m_sources.keys(); }
-    bool hasActiveSource() const { return !m_activeKey.isEmpty() && m_sources.contains(m_activeKey); }
-
-    // Información de la fuente activa
+    // Información de estado
     QAudioFormat activeFormat() const;
     bool isActiveSourceRunning() const;
+    bool hasActiveSource() const { return !m_activeKey.isEmpty(); }
+
+    // Información adicional
+    QStringList availableSources() const;
+    QString activeSourceKey() const;
+    SourceType activeSourceType() const;
+
+    bool updateNetworkSource(const QString& key, const QUrl& newUrl);
+    bool updateMicrophoneSource(const QString& key, const QAudioDevice& newDevice);
+
+public slots:
+    // Métodos para control masivo
+    void stopAllSources();
+    void clearAllSources();
 
 signals:
-    // Señales principales (mantener compatibilidad)
+    // Señales de gestión de fuentes
+    void sourceAdded(const QString& key);
+    void sourceRemoved(const QString& key);
+    void activeSourceChanged(SourceType type, const QString& id);
+
+    // Señales de datos y estado (desde fuentes activas)
     void dataReady(SourceType type, const QString& id, const QByteArray& data);
     void stateChanged(SourceType type, const QString& id, bool active);
     void error(SourceType type, const QString& id, const QString& message);
     void formatDetected(SourceType type, const QString& id, const QAudioFormat& format);
 
-    // Señales adicionales del controller
-    void activeSourceChanged(SourceType type, const QString& id);
-    void sourceAdded(const QString& key);
-    void sourceRemoved(const QString& key);
+    void sourceUpdated(const QString& key);
 
 private slots:
+    // Manejadores de señales de fuentes
     void onSourceDataReady();
     void onSourceStateChanged(SourceType type, const QString& id, bool active);
     void onSourceError(SourceType type, const QString& id, const QString& message);
     void onSourceFormatDetected(SourceType type, const QString& id, const QAudioFormat& format);
 
 private:
+    // Métodos internos
     void connectCurrent();
     void disconnectCurrent();
 
+    // Datos miembro
     QHash<QString, AudioSource*> m_sources;
     QString m_activeKey;
 };
+
+#endif // SOURCE_CONTROLLER_H

@@ -2,7 +2,6 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QCoreApplication>
-#include <QCryptographicHash>
 
 // HOW TO USE
 // NetworkSource *source = new NetworkSource();
@@ -18,6 +17,8 @@
 
 // source->start();
 
+// Contador estático para instancias
+int NetworkSource::s_instanceCounter = 0;
 
 NetworkSource::NetworkSource(const QUrl &url, QObject *parent)
     : AudioSource(parent)
@@ -36,14 +37,10 @@ NetworkSource::NetworkSource(const QUrl &url, QObject *parent)
     , m_pipelineCreated(false)
     , m_lastDataTime(0)
     , m_formatDetected(false)
+    , m_creationTime(QDateTime::currentDateTime())
 {
-    // setup de id
-    // ID: MD5 de la URL
-    QByteArray raw = url.toString().toUtf8();
-    m_sourceId = QCryptographicHash::hash(raw, QCryptographicHash::Md5).toHex();
-
-    // Para mostrar al usuario, puedes recortar la URL:
-    m_sourceName = url.toString(QUrl::RemoveUserInfo | QUrl::RemoveScheme);
+    // Generar identificadores únicos automáticamente
+    generateUniqueIdentifiers();
 
     // Configurar formato por defecto (fallback)
     m_format.setSampleRate(44100);
@@ -59,6 +56,14 @@ NetworkSource::NetworkSource(const QUrl &url, QObject *parent)
 
     // Inicializar GStreamer
     initializeGStreamer();
+
+    qDebug() << "NetworkSource created with ID:" << m_sourceId << "Name:" << m_sourceName;
+}
+
+NetworkSource::NetworkSource(QObject *parent)
+    : NetworkSource(QUrl(), parent)
+{
+    // Constructor delegado - el trabajo se hace en el constructor principal
 }
 
 NetworkSource::~NetworkSource()
@@ -69,6 +74,51 @@ NetworkSource::~NetworkSource()
     if (m_gstreamerInitialized) {
         gst_deinit();
     }
+}
+
+void NetworkSource::generateUniqueIdentifiers()
+{
+    // Generar UUID único
+    m_uuid = QUuid::createUuid();
+
+    // Incrementar contador de instancias
+    s_instanceCounter++;
+
+    // Crear ID único usando prefijo + número de instancia + timestamp + UUID corto
+    QString shortUuid = m_uuid.toString(QUuid::WithoutBraces).left(8);
+    qint64 timestamp = m_creationTime.toMSecsSinceEpoch();
+
+    m_sourceId = QString("NetSrc_%1_%2_%3")
+                     .arg(s_instanceCounter, 3, 10, QChar('0'))
+                     .arg(timestamp % 100000)  // Últimos 5 dígitos del timestamp
+                     .arg(shortUuid);
+
+    // Generar nombre friendly
+    m_sourceName = generateFriendlyName();
+}
+
+QString NetworkSource::generateFriendlyName()
+{
+    // Si hay URL, usar información de ella para el nombre
+    if (!m_streamUrl.isEmpty()) {
+        QString host = m_streamUrl.host();
+        QString path = m_streamUrl.path();
+
+        if (!host.isEmpty()) {
+            // Usar host y parte del path si existe
+            if (!path.isEmpty() && path != "/") {
+                QString pathPart = path.split("/").last();
+                if (!pathPart.isEmpty()) {
+                    return QString("Stream_%1_%2").arg(host).arg(pathPart);
+                }
+            }
+            return QString("Stream_%1").arg(host);
+        }
+    }
+
+    // Nombre genérico basado en timestamp y contador
+    QString timeStr = m_creationTime.toString("hhmm");
+    return QString("NetworkSource_%1_%2").arg(s_instanceCounter).arg(timeStr);
 }
 
 void NetworkSource::initializeGStreamer()
@@ -83,28 +133,34 @@ void NetworkSource::initializeGStreamer()
     }
 
     m_gstreamerInitialized = true;
-    qDebug() << "GStreamer initialized successfully";
+    qDebug() << "GStreamer initialized successfully for" << m_sourceId;
 }
 
 void NetworkSource::createPipeline()
 {
     if (!m_gstreamerInitialized || m_pipelineCreated) return;
 
-    // Crear pipeline
-    m_pipeline = gst_pipeline_new("audio-network-pipeline");
+    // Crear pipeline con nombre único
+    QString pipelineName = QString("audio-network-pipeline-%1").arg(m_sourceId);
+    m_pipeline = gst_pipeline_new(pipelineName.toUtf8().constData());
     if (!m_pipeline) {
-        qCritical() << "Failed to create GStreamer pipeline";
+        qCritical() << "Failed to create GStreamer pipeline for" << m_sourceId;
         return;
     }
 
-    // Crear elementos
-    m_source = gst_element_factory_make("uridecodebin", "source");
-    m_audioconvert = gst_element_factory_make("audioconvert", "audioconvert");
-    m_audioresample = gst_element_factory_make("audioresample", "audioresample");
-    m_appsink = gst_element_factory_make("appsink", "appsink");
+    // Crear elementos con nombres únicos
+    QString sourceBaseName = QString("source-%1").arg(m_sourceId);
+    QString convertBaseName = QString("audioconvert-%1").arg(m_sourceId);
+    QString resampleBaseName = QString("audioresample-%1").arg(m_sourceId);
+    QString sinkBaseName = QString("appsink-%1").arg(m_sourceId);
+
+    m_source = gst_element_factory_make("uridecodebin", sourceBaseName.toUtf8().constData());
+    m_audioconvert = gst_element_factory_make("audioconvert", convertBaseName.toUtf8().constData());
+    m_audioresample = gst_element_factory_make("audioresample", resampleBaseName.toUtf8().constData());
+    m_appsink = gst_element_factory_make("appsink", sinkBaseName.toUtf8().constData());
 
     if (!m_source || !m_audioconvert || !m_audioresample || !m_appsink) {
-        qCritical() << "Failed to create GStreamer elements";
+        qCritical() << "Failed to create GStreamer elements for" << m_sourceId;
         destroyPipeline();
         return;
     }
@@ -135,7 +191,7 @@ void NetworkSource::createPipeline()
 
     // Enlazar elementos estáticos
     if (!gst_element_link_many(m_audioconvert, m_audioresample, m_appsink, nullptr)) {
-        qCritical() << "Failed to link GStreamer elements";
+        qCritical() << "Failed to link GStreamer elements for" << m_sourceId;
         destroyPipeline();
         return;
     }
@@ -146,7 +202,7 @@ void NetworkSource::createPipeline()
 
     m_pipelineCreated = true;
     m_formatDetected = false;  // Reset detection flag
-    qDebug() << "GStreamer pipeline created successfully";
+    qDebug() << "GStreamer pipeline created successfully for" << m_sourceId;
 }
 
 void NetworkSource::destroyPipeline()
@@ -174,12 +230,17 @@ void NetworkSource::destroyPipeline()
     m_appsink = nullptr;
     m_pipelineCreated = false;
 
-    qDebug() << "GStreamer pipeline destroyed";
+    qDebug() << "GStreamer pipeline destroyed for" << m_sourceId;
 }
 
 void NetworkSource::start()
 {
-    if (m_active || m_streamUrl.isEmpty() || !m_gstreamerInitialized) return;
+    if (m_active || m_streamUrl.isEmpty() || !m_gstreamerInitialized) {
+        if (m_streamUrl.isEmpty()) {
+            qWarning() << "Cannot start" << m_sourceId << "- no URL set";
+        }
+        return;
+    }
 
     createPipeline();
     if (!m_pipelineCreated) return;
@@ -190,7 +251,7 @@ void NetworkSource::start()
     // Iniciar pipeline
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
-        qCritical() << "Failed to start GStreamer pipeline";
+        qCritical() << "Failed to start GStreamer pipeline for" << m_sourceId;
         destroyPipeline();
         return;
     }
@@ -201,7 +262,7 @@ void NetworkSource::start()
     m_healthCheckTimer->start();
 
     emit stateChanged(sourceType(), sourceId(), m_active);
-    qDebug() << "Network source started with URL:" << m_streamUrl.toString();
+    qDebug() << "Network source" << m_sourceId << "started with URL:" << m_streamUrl.toString();
 }
 
 void NetworkSource::stop()
@@ -221,7 +282,7 @@ void NetworkSource::stop()
     m_buffer.clear();
 
     emit stateChanged(sourceType(), sourceId(), m_active);
-    qDebug() << "Network source stopped";
+    qDebug() << "Network source" << m_sourceId << "stopped";
 }
 
 bool NetworkSource::isActive() const
@@ -250,16 +311,24 @@ QAudioFormat NetworkSource::format() const
 void NetworkSource::setUrl(const QUrl &url)
 {
     if (m_active) {
-        qWarning() << "Cannot change URL while active";
+        qWarning() << "Cannot change URL for" << m_sourceId << "while active";
         return;
     }
+
+    QUrl oldUrl = m_streamUrl;
     m_streamUrl = url;
+
+    // Regenerar nombre si cambió la URL significativamente
+    if (oldUrl.host() != url.host() || oldUrl.path() != url.path()) {
+        m_sourceName = generateFriendlyName();
+        qDebug() << "Updated name for" << m_sourceId << "to:" << m_sourceName;
+    }
 }
 
 void NetworkSource::setStreamFormat(const QAudioFormat &format)
 {
     if (m_active) {
-        qWarning() << "Cannot change format while active";
+        qWarning() << "Cannot change format for" << m_sourceId << "while active";
         return;
     }
     m_format = format;
@@ -268,7 +337,7 @@ void NetworkSource::setStreamFormat(const QAudioFormat &format)
 void NetworkSource::reconnectTimer()
 {
     if (m_active && m_gstreamerInitialized) {
-        qDebug() << "Attempting to reconnect...";
+        qDebug() << "Attempting to reconnect" << m_sourceId << "...";
 
         // Recrear pipeline
         destroyPipeline();
@@ -281,7 +350,7 @@ void NetworkSource::reconnectTimer()
             if (ret != GST_STATE_CHANGE_FAILURE) {
                 m_lastDataTime = QDateTime::currentMSecsSinceEpoch();
                 m_healthCheckTimer->start();
-                qDebug() << "Reconnection successful";
+                qDebug() << "Reconnection successful for" << m_sourceId;
                 return;
             }
         }
@@ -297,7 +366,7 @@ void NetworkSource::checkStreamHealth()
 
     qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
     if (currentTime - m_lastDataTime > STREAM_TIMEOUT) {
-        qWarning() << "Stream timeout detected, attempting reconnection";
+        qWarning() << "Stream timeout detected for" << m_sourceId << ", attempting reconnection";
         handleReconnection();
     }
 }
@@ -308,7 +377,8 @@ void NetworkSource::handleReconnection()
         m_reconnectAttempts++;
         int delay = m_reconnectAttempts * 2000; // Exponential backoff
 
-        qDebug() << "Scheduling reconnection in" << delay << "ms (attempt" << m_reconnectAttempts << ")";
+        qDebug() << "Scheduling reconnection for" << m_sourceId << "in" << delay
+                 << "ms (attempt" << m_reconnectAttempts << ")";
 
         m_healthCheckTimer->stop();
         if (m_pipeline) {
@@ -317,9 +387,9 @@ void NetworkSource::handleReconnection()
 
         m_reconnectTimer->start(delay);
     } else {
-        qWarning() << "Max reconnection attempts reached";
+        qWarning() << "Max reconnection attempts reached for" << m_sourceId;
         stop();
-        emit error(sourceType(), sourceId(),"Max reconnection attempts reached");
+        emit error(sourceType(), sourceId(), "Max reconnection attempts reached");
     }
 }
 
@@ -355,7 +425,7 @@ void NetworkSource::onEos(GstAppSink *sink, gpointer user_data)
 {
     Q_UNUSED(sink)
     NetworkSource *source = static_cast<NetworkSource*>(user_data);
-    qDebug() << "End of stream reached";
+    qDebug() << "End of stream reached for" << source->m_sourceId;
     source->handleReconnection();
 }
 
@@ -371,9 +441,9 @@ gboolean NetworkSource::onBusMessage(GstBus *bus, GstMessage *message, gpointer 
         gst_message_parse_error(message, &error, &debug);
 
         QString errorMsg = QString("GStreamer error: %1").arg(error->message);
-        qCritical() << errorMsg;
+        qCritical() << "Error in" << source->m_sourceId << ":" << errorMsg;
         if (debug) {
-            qDebug() << "Debug info:" << debug;
+            qDebug() << "Debug info for" << source->m_sourceId << ":" << debug;
         }
 
         emit source->error(source->sourceType(), source->sourceId(), errorMsg);
@@ -388,9 +458,9 @@ gboolean NetworkSource::onBusMessage(GstBus *bus, GstMessage *message, gpointer 
         gchar *debug;
         gst_message_parse_warning(message, &error, &debug);
 
-        qWarning() << "GStreamer warning:" << error->message;
+        qWarning() << "GStreamer warning in" << source->m_sourceId << ":" << error->message;
         if (debug) {
-            qDebug() << "Debug info:" << debug;
+            qDebug() << "Debug info for" << source->m_sourceId << ":" << debug;
         }
 
         g_error_free(error);
@@ -398,7 +468,7 @@ gboolean NetworkSource::onBusMessage(GstBus *bus, GstMessage *message, gpointer 
         break;
     }
     case GST_MESSAGE_EOS:
-        qDebug() << "End of stream";
+        qDebug() << "End of stream for" << source->m_sourceId;
         source->handleReconnection();
         break;
     default:
@@ -415,17 +485,17 @@ void NetworkSource::onPadAdded(GstElement *element, GstPad *pad, gpointer user_d
 
     GstCaps *caps = gst_pad_get_current_caps(pad);
     if (!caps) {
-        qWarning() << "No caps available on pad";
+        qWarning() << "No caps available on pad for" << source->m_sourceId;
         return;
     }
 
     GstStructure *structure = gst_caps_get_structure(caps, 0);
     const gchar *name = gst_structure_get_name(structure);
 
-    qDebug() << "Pad added with caps:" << gst_caps_to_string(caps);
+    qDebug() << "Pad added for" << source->m_sourceId << "with caps:" << gst_caps_to_string(caps);
 
     if (g_str_has_prefix(name, "audio/")) {
-        qDebug() << "Audio pad detected, analyzing format...";
+        qDebug() << "Audio pad detected for" << source->m_sourceId << ", analyzing format...";
 
         // DETECTAR Y ACTUALIZAR FORMATO
         source->updateFormatFromCaps(caps);
@@ -438,20 +508,19 @@ void NetworkSource::onPadAdded(GstElement *element, GstPad *pad, gpointer user_d
         if (sinkpad && !gst_pad_is_linked(sinkpad)) {
             GstPadLinkReturn linkResult = gst_pad_link(pad, sinkpad);
             if (linkResult != GST_PAD_LINK_OK) {
-                qWarning() << "Failed to link audio pad, error:" << linkResult;
+                qWarning() << "Failed to link audio pad for" << source->m_sourceId << ", error:" << linkResult;
             } else {
-                qDebug() << "Audio pad linked successfully with auto-detected format";
-                emit source->formatDetected(source->sourceType(), source->sourceId(), source->m_format);  // Nueva señal
+                qDebug() << "Audio pad linked successfully for" << source->m_sourceId << "with auto-detected format";
+                emit source->formatDetected(source->sourceType(), source->sourceId(), source->m_format);
             }
         }
         if (sinkpad) gst_object_unref(sinkpad);
     } else {
-        qDebug() << "Non-audio pad ignored:" << name;
+        qDebug() << "Non-audio pad ignored for" << source->m_sourceId << ":" << name;
     }
 
     gst_caps_unref(caps);
 }
-
 
 void NetworkSource::updateFormatFromCaps(GstCaps *caps)
 {
@@ -466,14 +535,14 @@ void NetworkSource::updateFormatFromCaps(GstCaps *caps)
     gint rate = 44100;  // default
     if (gst_structure_get_int(structure, "rate", &rate)) {
         m_detectedFormat.setSampleRate(rate);
-        qDebug() << "Detected sample rate:" << rate;
+        qDebug() << "Detected sample rate for" << m_sourceId << ":" << rate;
     }
 
     // Detectar canales
     gint channels = 2;  // default
     if (gst_structure_get_int(structure, "channels", &channels)) {
         m_detectedFormat.setChannelCount(channels);
-        qDebug() << "Detected channels:" << channels;
+        qDebug() << "Detected channels for" << m_sourceId << ":" << channels;
     }
 
     // Detectar formato
@@ -488,7 +557,7 @@ void NetworkSource::updateFormatFromCaps(GstCaps *caps)
             } else if (qtFormat == "Float") {
                 m_detectedFormat.setSampleFormat(QAudioFormat::Float);
             }
-            qDebug() << "Detected format:" << format << "-> Qt format:" << qtFormat;
+            qDebug() << "Detected format for" << m_sourceId << ":" << format << "-> Qt format:" << qtFormat;
         }
     }
 
@@ -496,7 +565,7 @@ void NetworkSource::updateFormatFromCaps(GstCaps *caps)
     m_format = m_detectedFormat;
     m_formatDetected = true;
 
-    qDebug() << "Final detected format:"
+    qDebug() << "Final detected format for" << m_sourceId << ":"
              << "Rate:" << m_format.sampleRate()
              << "Channels:" << m_format.channelCount()
              << "Format:" << m_format.sampleFormat();
@@ -533,7 +602,7 @@ void NetworkSource::configureAppSinkWithDetectedFormat()
     g_object_set(m_appsink, "caps", caps, nullptr);
     gst_caps_unref(caps);
 
-    qDebug() << "AppSink configured with detected format:" << gstFormat
+    qDebug() << "AppSink configured for" << m_sourceId << "with detected format:" << gstFormat
              << m_format.sampleRate() << "Hz," << m_format.channelCount() << "ch";
 }
 
@@ -548,5 +617,5 @@ QString NetworkSource::gstFormatToQtFormat(const gchar* gstFormat)
     if (format.startsWith("F32")) return "Float";
     if (format.startsWith("F64")) return "Float";
 
-    return "Int16";  // default fallback
+    return "Int16";
 }

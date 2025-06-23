@@ -615,3 +615,4 @@ QVector<int> WaveformWidget::findPeaks() const
 
     return peaks;
 }
+

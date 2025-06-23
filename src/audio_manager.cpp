@@ -1,36 +1,133 @@
 #include "include/audio_manager.h"
+#include "include/data_structures/audio_statistics.h"
 #include "qdatetime.h"
 #include <QElapsedTimer>
 #include <QDebug>
 #include <QtMath>
 #include <algorithm>
 
-AudioManager::AudioManager(SourceController* controller, QObject* parent)
+AudioManager::AudioManager( QObject* parent)
     : QObject(parent)
-    , m_controller(controller)
+    , m_audioConfig()
+    , m_processor(nullptr)
+    , m_controller(new SourceController(this))
+    , m_isProcessing(false)
+    , m_formatValid(false)
+    , m_updateRateMs(20)
+    , m_waveformDurationS(2.0)
+    , m_waveformSamples(1024)
+    , m_maxBufferSize(1024 * 1024)
+    , m_totalProcTimeUs(0)
+    , m_totalSamples(0)
+    , m_chunksCount(0)
+    , m_avgLatencyMs(0.0)
 {
-    // Timer para procesar datos acumulados
-    m_processingTimer.setInterval(m_updateRateMs);
-    connect(&m_processingTimer, &QTimer::timeout,
-            this, &AudioManager::processAccumulatedData);
+    qDebug() << "[AM] AudioManager initialized with" << m_updateRateMs << "ms update rate";
 
-    // Conectar señales del controlador
+    // Ajusta m_audioConfig según tus valores deseados
+    m_audioConfig.fftSize            = m_waveformSamples * 2;  // 2048
+    m_audioConfig.overlap            = m_waveformSamples;      // 1024
+    m_audioConfig.spectrogramHistory = 150;
+    m_audioConfig.waveformBufferSize = 8192;
+    m_audioConfig.windowType         = AudioConfiguration::Hanning;
+
+    // Crea y configura el AudioProcessor **una sola vez**
+    m_processor = std::make_unique<AudioProcessor>(m_audioConfig, this);
+    connect(m_processor.get(), &AudioProcessor::processingError,
+            this, &AudioManager::onProcessorError);
+
+    // Timer para procesar datos
+    m_processingTimer.setInterval(m_updateRateMs);
+    bool ok = connect(&m_processingTimer, &QTimer::timeout,
+                      this, &AudioManager::processAccumulatedData);
+    qDebug() << "[AM] Timer timeout connected =" << ok;
+
+    //===============================================
+    // SOURCE CONTROLLER SETUP
+    //===============================================
+    // connect(m_controller, &SourceController::dataReady,
+    //         this, &AudioManager::handleRawData);
+    // connect(m_controller, &SourceController::formatDetected,
+    //         this, &AudioManager::onFormatDetected);
+    // connect(m_controller, &SourceController::stateChanged,
+    //         this, &AudioManager::onSourceStateChanged);
+
+    network_source_id = m_controller->addNetworkSource(
+        QUrl::fromUserInput(""));
+    mic_source_id = QStringLiteral("mic1");
+    m_controller->addMicrophoneSource(mic_source_id);
+
     connect(m_controller, &SourceController::dataReady,
             this, &AudioManager::handleRawData);
 
-    connect(m_controller, &SourceController::formatDetected,
-            this, &AudioManager::onFormatDetected);
 
     connect(m_controller, &SourceController::stateChanged,
-            this, &AudioManager::onSourceStateChanged);
+            this, [](SourceType type, const QString& id, bool active){
+                qDebug() << "[AudioManager] Fuente" << id << "activa?" << active;
+            });
 
-    qDebug() << "AudioManager initialized with" << m_updateRateMs << "ms update rate";
+    connect(m_controller, &SourceController::error,
+            this, [](SourceType type, const QString& id, const QString& msg){
+                qWarning() << "[AudioManager] Error en" << id << ":" << msg;
+            });
+
+    connect(m_controller, &SourceController::formatDetected,
+            this, [](SourceType type, const QString& id, const QAudioFormat& fmt){
+                qDebug() << "[AudioManager] Formato detectado en" << id << ":"
+                         << fmt.sampleRate() << "Hz," << fmt.channelCount() << "canales";
+            });
 }
+
 
 AudioManager::~AudioManager()
 {
     stopProcessing();
 }
+
+bool AudioManager::fetchURL(const QUrl& input_url)
+{
+    // 1. Intentar actualizar la URL en el controller
+    bool ok = m_controller->updateNetworkSource(network_source_id, input_url);
+    if (!ok) {
+        qWarning() << "[AudioManager] No se pudo actualizar la URL de la fuente de red (clave="
+                   << network_source_id << ") a" << input_url.toString();
+        return false;
+    }
+    qDebug() << "[AudioManager] URL de red actualizada a" << input_url.toString();
+
+    // 2. Asegurarnos de que la fuente activa sea la de red
+    if (m_controller->activeSourceKey() != network_source_id ||
+        m_controller->activeSourceType() != SourceType::Network)
+    {
+        qDebug() << "[AudioManager] Cambiando fuente activa a la de red:" << network_source_id;
+        if (!m_controller->setActiveSource(network_source_id)) {
+            qWarning() << "[AudioManager] No se pudo activar la fuente de red:" << network_source_id;
+            return false;
+        }
+    }
+
+    // 3. Si la fuente de red no está corriendo, (re)iniciarla
+    if (!m_controller->isActiveSourceRunning()) {
+        qDebug() << "[AudioManager] Iniciando la fuente de red:" << network_source_id;
+        m_controller->setActiveSource(network_source_id);
+        m_controller->start();
+    }
+    return true;
+}
+
+
+bool AudioManager::fetchMicrophone(const QString& micKey, const QAudioDevice& newDevice)
+{
+    bool ok = m_controller->updateMicrophoneSource(micKey, newDevice);
+    if (!ok) {
+        qWarning() << "[AudioManager] No se pudo actualizar el dispositivo del micrófono (clave="
+                   << micKey << ") a" << newDevice.description();
+        return false;
+    }
+    qDebug() << "[AudioManager] Micrófono" << micKey << "actualizado a" << newDevice.description();
+    return true;
+}
+
 
 void AudioManager::startProcessing()
 {
@@ -59,6 +156,7 @@ void AudioManager::startProcessing()
 
 void AudioManager::stopProcessing()
 {
+    qDebug() << "StopProcessing called";
     if (!m_isProcessing) {
         qDebug() << "AudioManager not processing";
         return;
@@ -73,13 +171,21 @@ void AudioManager::stopProcessing()
     locker.unlock();
 
     m_isProcessing = false;
+    delete m_controller;
     emit processingStopped();
     qDebug() << "AudioManager processing stopped";
 }
 
+
+
 bool AudioManager::isProcessing() const
 {
     return m_isProcessing;
+}
+
+int AudioManager::getUpdateRate() const
+{
+    return m_updateRateMs;
 }
 
 void AudioManager::setUpdateRate(int ms)
@@ -120,7 +226,10 @@ void AudioManager::setWaveformSamples(int samples)
 
 void AudioManager::handleRawData(SourceType /*type*/, const QString& /*id*/, const QByteArray& rawData)
 {
+    qDebug() << "[DBG] handleRawData: rawData size =" << rawData.size();
+
     if (!m_isProcessing || rawData.isEmpty()) {
+        qDebug() << "No raw data";
         return;
     }
 
@@ -137,37 +246,72 @@ void AudioManager::handleRawData(SourceType /*type*/, const QString& /*id*/, con
 
 void AudioManager::processAccumulatedData()
 {
-    if (!m_isProcessing || !m_formatValid) {
+    qDebug() << "[DBG] processAccumulatedData() called."
+             << "isProcessing=" << m_isProcessing
+             << "formatValid="  << m_formatValid
+             << "pendingDataSize=" << m_pendingData.size();
+
+    if (!m_isProcessing || !m_formatValid || !m_processor) {
+        qDebug() << "[DBG] early exit, state:"
+                 << "isProcessing=" << m_isProcessing
+                 << "formatValid="  << m_formatValid
+                 << "processor="    << (m_processor != nullptr);
         return;
     }
 
-    QMutexLocker locker(&m_dataMutex);
-    if (m_pendingData.isEmpty()) {
+    QByteArray raw;
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_pendingData.isEmpty()) {
+            qDebug() << "[DBG] no pending data, returning";
+            return;
+        }
+        raw = m_pendingData;
+        m_pendingData.clear();
+    }
+    qDebug() << "[DBG] Stole raw bytes, length =" << raw.size();
+
+    QVector<float> samples = convertToFloat(raw, m_currentFormat);
+    qDebug() << "[DBG] Converted to float samples, count =" << samples.size();
+    if (samples.isEmpty()) {
+        qWarning() << "[DBG] No samples after conversion";
         return;
     }
 
-    // Tomar una copia de los datos y limpiar el buffer
-    QByteArray dataToProcess = m_pendingData;
-    m_pendingData.clear();
-    locker.unlock();
+    VisualizationData vizData;
+    QElapsedTimer timer; timer.start();
+    bool ok = m_processor->processAudioData(samples, m_currentFormat, vizData);
+    qint64 procTimeUs = timer.nsecsElapsed() / 1000;
+    qDebug() << "[DBG] processAudioData returned" << ok << "in" << procTimeUs << "µs";
 
-    // Procesar los datos
-    QElapsedTimer timer;
-    timer.start();
+    if (!ok) {
+        qWarning() << "[DBG] processAudioData failed";
+        return;
+    }
 
-    VisualizationData vizData = processAudioChunk(dataToProcess);
+    qDebug() << "[DBG] vizData.waveform.size =" << vizData.waveform.size()
+             << "spectrum.size =" << vizData.spectrum.size()
+             << "peakLevel =" << vizData.peakLevel
+             << "rmsLevel =" << vizData.rmsLevel;
 
-    qint64 processingTimeUs = timer.nsecsElapsed() / 1000;
+    updateStatistics(procTimeUs, vizData.waveform.size());
 
-    // Actualizar estadísticas
-    updateStatistics(processingTimeUs, vizData.waveform.size());
 
-    // Emitir datos para visualización
+    // Compute frequency resolution if spectrum provided
+    if (!vizData.spectrum.isEmpty()) {
+        vizData.frequencyResolution =
+            (float)m_currentFormat.sampleRate() / vizData.spectrum.size();
+    }
+
+    // Emit visualization and periodic stats
     emit visualizationDataReady(vizData);
-
-    // Emitir estadísticas periódicamente
     if (m_chunksCount % (1000 / m_updateRateMs) == 0) {
-        emit statisticsUpdated(getProcessingLoad(), m_totalSamples, m_avgLatencyMs);
+        AudioStatistics stats = getStatistics();
+        emit statisticsUpdated(
+            stats.processingLoad,
+            stats.totalSamples,
+            stats.averageLatency
+            );
     }
 }
 
@@ -263,12 +407,28 @@ QVector<float> AudioManager::calculateSpectrum(const QVector<float>& samples)
     int spectrumSize = qMin(512, samples.size() / 2);
     spectrum.reserve(spectrumSize);
 
-    // Simulación simple de espectro - reemplazar con FFT real
+    // Simulación simple de espectro basada en análisis por bandas
+    int bandsPerBin = qMax(1, samples.size() / spectrumSize);
+
     for (int i = 0; i < spectrumSize; ++i) {
         float magnitude = 0.0f;
-        if (i < samples.size()) {
-            magnitude = qAbs(samples[i]);
+        int count = 0;
+
+        // Promediar muestras en cada banda
+        int startIdx = i * bandsPerBin;
+        int endIdx = qMin(startIdx + bandsPerBin, samples.size());
+
+        for (int j = startIdx; j < endIdx; ++j) {
+            magnitude += qAbs(samples[j]);
+            count++;
         }
+
+        if (count > 0) {
+            magnitude /= count;
+            // Simular respuesta logarítmica típica del espectro
+            magnitude = qSqrt(magnitude) * (1.0f + i * 0.001f);
+        }
+
         spectrum.append(magnitude);
     }
 
@@ -307,6 +467,7 @@ void AudioManager::onFormatDetected(SourceType /*type*/, const QString& /*id*/, 
 void AudioManager::onSourceStateChanged(SourceType /*type*/, const QString& /*id*/, bool active)
 {
     qDebug() << "Source state changed:" << (active ? "ACTIVE" : "INACTIVE");
+    emit sourceStateChanged(active);
 }
 
 double AudioManager::getProcessingLoad() const
@@ -333,6 +494,20 @@ QAudioFormat AudioManager::getCurrentFormat() const
     return m_currentFormat;
 }
 
+AudioStatistics AudioManager::getStatistics() const
+{
+    AudioStatistics stats;
+    stats.processingLoad = getProcessingLoad();
+    stats.totalSamples = m_totalSamples;
+    stats.averageLatency = m_avgLatencyMs;
+    stats.currentFormat = m_currentFormat;
+    stats.formatValid = m_formatValid;
+    stats.processingTime = m_totalProcTimeUs;
+    stats.chunksProcessed = m_chunksCount;
+    stats.updateDerivedStats();
+    return stats;
+}
+
 void AudioManager::resetStatistics()
 {
     m_totalProcTimeUs = 0;
@@ -352,4 +527,19 @@ void AudioManager::updateStatistics(qint64 processingTimeUs, int samplesProcesse
         double bufferMs = (double)samplesProcessed / (m_currentFormat.sampleRate() * m_currentFormat.channelCount()) * 1000.0;
         m_avgLatencyMs = (m_avgLatencyMs * (m_chunksCount - 1) + bufferMs) / m_chunksCount;
     }
+}
+
+void AudioManager::applyConfiguration(const AudioConfiguration& config)
+{
+    m_audioConfig = config;
+    if (m_processor) {
+        m_processor->applyConfiguration(config);
+    }
+}
+
+void AudioManager::onProcessorError(const QString& error)
+{
+    // Reenvía como señal pública
+    emit processingError(error);
+    qWarning() << "AudioManager - Processor error:" << error;
 }

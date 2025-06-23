@@ -2,7 +2,8 @@ QT       += core gui multimedia multimediawidgets widgets concurrent network
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
-CONFIG += c++20
+CONFIG += c++20 link_fftw3
+LIBS += -lfftw3f
 
 # Configuración para pkg-config
 CONFIG += link_pkgconfig
@@ -26,18 +27,25 @@ SOURCES += \
     src/gui/rt_mainwindow.cpp \
     src/microphone_source.cpp \
     src/networksource.cpp \
+    src/simple_waveform.cpp \
     src/source_controller.cpp \
     src/spectrogram_widget.cpp \
     src/waveform_widget.cpp \
+    #tests/audio_processor_test.cpp \
     tests/audio_tester.cpp
 
 HEADERS += \
     include/audio_manager.h \
     include/audio_processor.h \
     include/audio_visualizer.h \
+    include/data_structures/audio_configuration.h \
+    include/data_structures/audio_source_info.h \
+    include/data_structures/audio_statistics.h \
+    include/data_structures/source_type.h \
     include/data_structures/visualization_data.h \
     include/gui/control_panel.h \
     include/gui/rt_mainwindow.h \
+    include/simple_waveform.h \
     include/source_controller.h \
     include/spectrogram_widget.h \
     include/waveform_widget.h \

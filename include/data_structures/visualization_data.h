@@ -4,16 +4,17 @@
 #include <QtGlobal>
 
 struct VisualizationData {
-    QVector<float>             waveform;     ///< Datos de forma de onda (-1.0 a 1.0)
-    QVector<float>             spectrum;     ///< Magnitudes del espectro FFT
-    QVector<float>             frequencies;  ///< Frecuencias correspondientes al espectro
-    QVector<QVector<float>>    spectrogram;  ///< Historial de espectrograma
-    qint64                     timestamp  = 0;      ///< Timestamp en ms
-    int                        sampleRate = 44100;  ///< Frecuencia de muestreo
-    int                        channels   = 2;      ///< Número de canales
-    double                     peakLevel  = 0.0;    ///< Nivel de pico para VU meter
-    double                     rmsLevel   = 0.0;    ///< Nivel RMS para VU meter
-
-    VisualizationData() = default;
+    QVector<float> waveform;
+    QVector<float> spectrum;
+    QVector<QVector<float>> spectrogram;
+    double peakLevel = 0.0;
+    double rmsLevel = 0.0;
+    int sampleRate = 0;
+    int channels = 0;
+    qint64 timestamp = 0;
+    int fftSize = 0;
+    float frequencyResolution = 0.0f;
 };
+
+
 #endif // VISUALIZATION_DATA_H

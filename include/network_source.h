@@ -6,7 +6,8 @@
 #include <QTimer>
 #include <QUrl>
 #include <QMutex>
-#include <QCryptographicHash>
+#include <QUuid>
+#include <QDateTime>
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 
@@ -16,6 +17,7 @@ class NetworkSource : public AudioSource
 
 public:
     explicit NetworkSource(const QUrl& url = QUrl(), QObject *parent = nullptr);
+    explicit NetworkSource(QObject *parent = nullptr);  // Constructor sin URL
     ~NetworkSource() override;
 
     // AudioSource interface
@@ -25,15 +27,18 @@ public:
     QByteArray getData() override;
     QAudioFormat format() const override;
 
-    // Identificación
+    // Identificación automática
     SourceType sourceType() const override { return SourceType::Network; }
-    QString    sourceId()   const override { return QStringLiteral("Net:%1").arg(m_sourceId); }
+    QString    sourceId()   const override { return m_sourceId; }
     QString    sourceName() const override { return m_sourceName; }
 
     // NetworkSource specific
     void setUrl(const QUrl &url);
     void setStreamFormat(const QAudioFormat &format);
 
+    // Información adicional
+    QUrl currentUrl() const { return m_streamUrl; }
+    QDateTime creationTime() const { return m_creationTime; }
 
 signals:
     // Señales con type + id + payload
@@ -44,6 +49,10 @@ private slots:
     void checkStreamHealth();
 
 private:
+    // UID Generation
+    void generateUniqueIdentifiers();
+    QString generateFriendlyName();
+
     // GStreamer setup / teardown
     void initializeGStreamer();
     void createPipeline();
@@ -94,9 +103,12 @@ private:
     bool         m_formatDetected   = false;
     QMutex       m_formatMutex;
 
-    // Identificadores
-    QString m_sourceId;             // MD5 hash de la URL
-    QString m_sourceName;           // versión friendly de la URL
+    // Identificadores únicos automáticos
+    QString   m_sourceId;           // UUID único para esta instancia
+    QString   m_sourceName;         // Nombre friendly automático
+    QUuid     m_uuid;               // UUID original
+    QDateTime m_creationTime;       // Timestamp de creación
+    static int s_instanceCounter;   // Contador global de instancias
 };
 
 #endif // NETWORK_SOURCE_H
