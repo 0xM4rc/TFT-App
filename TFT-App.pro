@@ -1,4 +1,4 @@
-QT       += core gui multimedia multimediawidgets widgets concurrent network
+QT       += core gui multimedia multimediawidgets widgets concurrent network charts sql
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -9,52 +9,30 @@ LIBS += -lfftw3f
 CONFIG += link_pkgconfig
 
 # Paquetes de GStreamer
-PKGCONFIG += gstreamer-1.0
-PKGCONFIG += gstreamer-app-1.0
-PKGCONFIG += gstreamer-audio-1.0
+PKGCONFIG += gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0
+
 
 # Si quieres desactivar APIs obsoletas antes de Qt 6.0:
 # DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000
 
 SOURCES += \
+    audio_db.cpp \
+    audio_receiver.cpp \
+    disk_buffer.cpp \
+    dsp_worker.cpp \
     main.cpp \
     mainwindow.cpp \
-    src/audio_manager.cpp \
-    src/audio_processor.cpp \
-    src/audio_visualizer.cpp \
-    src/audiosource.cpp \
-    src/gui/control_panel.cpp \
-    src/gui/rt_mainwindow.cpp \
-    src/microphone_source.cpp \
-    src/networksource.cpp \
-    src/simple_waveform.cpp \
-    src/source_controller.cpp \
-    src/spectrogram_widget.cpp \
-    src/waveform_widget.cpp \
+    network_receiver.cpp
     #tests/audio_processor_test.cpp \
-    tests/audio_tester.cpp
 
 HEADERS += \
-    include/audio_manager.h \
-    include/audio_processor.h \
-    include/audio_visualizer.h \
-    include/data_structures/audio_configuration.h \
-    include/data_structures/audio_source_info.h \
-    include/data_structures/audio_statistics.h \
-    include/data_structures/source_type.h \
-    include/data_structures/visualization_data.h \
-    include/gui/control_panel.h \
-    include/gui/rt_mainwindow.h \
-    include/simple_waveform.h \
-    include/source_controller.h \
-    include/spectrogram_widget.h \
-    include/waveform_widget.h \
+    audio_db.h \
+    audio_receiver.h \
+    disk_buffer.h \
+    dsp_worker.h \
+    ireceiver.h \
     mainwindow.h \
-    include/audiochunk.h \
-    include/interfaces/audio_source.h \
-    include/microphone_source.h \
-    include/network_source.h \
-    tests/audio_tester.h
+    network_receiver.h
 
 FORMS += \
     mainwindow.ui

@@ -131,50 +131,43 @@ bool AudioManager::fetchMicrophone(const QString& micKey, const QAudioDevice& ne
 
 void AudioManager::startProcessing()
 {
-    if (m_isProcessing) {
-        qDebug() << "AudioManager already processing";
-        return;
-    }
-
+    if (m_isProcessing) return;
     resetStatistics();
 
-    // Obtener formato actual si está disponible
     m_currentFormat = m_controller->activeFormat();
-    m_formatValid = m_currentFormat.isValid();
-
-    if (!m_formatValid) {
-        qWarning() << "Starting without valid audio format - will wait for detection";
-    }
+    m_formatValid   = m_currentFormat.isValid();
 
     m_controller->start();
     m_processingTimer.start();
-    m_isProcessing = true;
 
+    // <<< Añade esto:
+    if (m_processor) {
+        m_processor->start();
+    }
+
+    m_isProcessing = true;
     emit processingStarted();
     qDebug() << "AudioManager processing started";
 }
 
+
 void AudioManager::stopProcessing()
 {
-    qDebug() << "StopProcessing called";
-    if (!m_isProcessing) {
-        qDebug() << "AudioManager not processing";
-        return;
-    }
+    if (!m_isProcessing) return;
 
     m_processingTimer.stop();
     m_controller->stop();
 
-    // Limpiar buffer pendiente
-    QMutexLocker locker(&m_dataMutex);
-    m_pendingData.clear();
-    locker.unlock();
+    // <<< Añade esto:
+    if (m_processor) {
+        m_processor->stop();
+    }
 
+    // limpia buffers…
     m_isProcessing = false;
-    delete m_controller;
     emit processingStopped();
-    qDebug() << "AudioManager processing stopped";
 }
+
 
 
 
@@ -278,14 +271,23 @@ void AudioManager::processAccumulatedData()
         return;
     }
 
-    VisualizationData vizData;
-    QElapsedTimer timer; timer.start();
-    bool ok = m_processor->processAudioData(samples, m_currentFormat, vizData);
-    qint64 procTimeUs = timer.nsecsElapsed() / 1000;
-    qDebug() << "[DBG] processAudioData returned" << ok << "in" << procTimeUs << "µs";
+    // 1) Push samples al AudioProcessor
+    if (!m_processor->pushAudioData(samples.constData(), samples.size(), m_currentFormat)) {
+        qWarning() << "[DBG] pushAudioData failed";
+        return;
+    }
 
+    // 2) Medir tiempo de procesamiento forzado
+    QElapsedTimer timer; timer.start();
+    qint64 procTimeUs = timer.nsecsElapsed() / 1000;
+    qDebug() << "[DBG] forced processAudioBuffer in" << procTimeUs << "µs";
+
+    // 3) Obtener VisualizationData
+    VisualizationData vizData;
+    bool ok = m_processor->getVisualizationData(vizData);
+    qDebug() << "[DBG] getVisualizationData returned" << ok;
     if (!ok) {
-        qWarning() << "[DBG] processAudioData failed";
+        qWarning() << "[DBG] No visualization data ready";
         return;
     }
 
@@ -295,7 +297,6 @@ void AudioManager::processAccumulatedData()
              << "rmsLevel =" << vizData.rmsLevel;
 
     updateStatistics(procTimeUs, vizData.waveform.size());
-
 
     // Compute frequency resolution if spectrum provided
     if (!vizData.spectrum.isEmpty()) {
@@ -314,6 +315,7 @@ void AudioManager::processAccumulatedData()
             );
     }
 }
+
 
 VisualizationData AudioManager::processAudioChunk(const QByteArray& data)
 {
@@ -533,7 +535,7 @@ void AudioManager::applyConfiguration(const AudioConfiguration& config)
 {
     m_audioConfig = config;
     if (m_processor) {
-        m_processor->applyConfiguration(config);
+        m_processor->setConfiguration(config);
     }
 }
 

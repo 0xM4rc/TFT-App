@@ -1,147 +1,64 @@
-#include "include/audio_processor.h"
+
+include "include/audio_processor.h"
 #include <QDebug>
 #include <QDateTime>
 #include <algorithm>
-#include <fftw3.h>
-
-const float AudioProcessor::DEFAULT_MIN_FREQUENCY = 20.0f;
-const float AudioProcessor::DEFAULT_MAX_FREQUENCY = 20000.0f;
+#include <cmath>
+#include <immintrin.h> // For SIMD operations
 
 // ============================================================================
-// AudioBuffer Implementation
+// LockFreeRingBuffer Implementation (Header-only template)
 // ============================================================================
-
-AudioBuffer::AudioBuffer(int maxSize)
-    : m_writePos(0)
-    , m_currentSize(0)
-    , m_maxSize(maxSize)
-{
-    m_buffer.resize(maxSize);
-    m_buffer.fill(0.0f);
-}
-
-void AudioBuffer::setMaxSize(int size)
-{
-    QMutexLocker locker(&m_mutex);
-
-    if (size == m_maxSize) return;
-
-    m_buffer.resize(size);
-    m_maxSize = size;
-
-    if (m_currentSize > size) {
-        m_currentSize = size;
-    }
-    if (m_writePos >= size) {
-        m_writePos = 0;
-    }
-}
-
-void AudioBuffer::append(const QVector<float>& data)
-{
-    if (data.isEmpty()) return;
-    append(data.constData(), data.size());
-}
-
-void AudioBuffer::append(const float* data, int count)
-{
-    if (!data || count <= 0) return;
-
-    QMutexLocker locker(&m_mutex);
-
-    for (int i = 0; i < count; ++i) {
-        m_buffer[m_writePos] = data[i];
-        m_writePos = (m_writePos + 1) % m_maxSize;
-
-        if (m_currentSize < m_maxSize) {
-            m_currentSize++;
-        }
-    }
-}
-
-QVector<float> AudioBuffer::getLastSamples(int count) const
-{
-    QMutexLocker locker(&m_mutex);
-
-    if (count <= 0 || m_currentSize == 0) {
-        return QVector<float>();
-    }
-
-    count = qMin(count, m_currentSize);
-    QVector<float> result(count);
-
-    int readPos = (m_writePos - count + m_maxSize) % m_maxSize;
-
-    for (int i = 0; i < count; ++i) {
-        result[i] = m_buffer[readPos];
-        readPos = (readPos + 1) % m_maxSize;
-    }
-
-    return result;
-}
-
-QVector<float> AudioBuffer::getAllSamples() const
-{
-    return getLastSamples(m_currentSize);
-}
-
-void AudioBuffer::clear()
-{
-    QMutexLocker locker(&m_mutex);
-    m_buffer.fill(0.0f);
-    m_writePos = 0;
-    m_currentSize = 0;
-}
 
 // ============================================================================
 // FFTProcessor Implementation
 // ============================================================================
 
-FFTProcessor::FFTProcessor(int fftSize)
+FFTProcessor::FFTProcessor(int fftSize, WindowType windowType)
     : m_fftSize(fftSize)
-    , m_windowType(Hanning)
-    , m_inputRealBuffer(nullptr)
-    , m_fftBuffer(nullptr)
+    , m_windowType(windowType)
+    , m_windowBuffer(nullptr)
+    , m_inputBuffer(nullptr)
+    , m_outputBuffer(nullptr)
     , m_plan(nullptr)
 {
-    // 1) Crear ventana por defecto
+    if (!initializeFFT()) {
+        qCritical() << "Failed to initialize FFT processor";
+    }
     generateWindow();
-    // 2) Inicializar FFT con el tamaño indicado
-    initializeFFT();
 }
-
 
 FFTProcessor::~FFTProcessor()
 {
     cleanupFFT();
 }
 
-void FFTProcessor::setFFTSize(int size)
+bool FFTProcessor::setFFTSize(int size)
 {
-    // Sólo potencias de 2 razonables
-    if (size < 64 || size > 8192 || (size & (size - 1)) != 0) {
-        qWarning() << "FFT size must be power of 2 between 64 and 8192";
-        return;
+    // Validate FFT size (must be power of 2)
+    if (size < 64 || size > MAX_FFT_SIZE || (size & (size - 1)) != 0) {
+        qWarning() << "Invalid FFT size:" << size << "(must be power of 2 between 64 and" << MAX_FFT_SIZE << ")";
+        return false;
     }
-    // Si no cambia, no hacemos nada
-    if (size == m_fftSize) return;
 
-    // 1) Liberar plan/buffers viejos
+    if (size == m_fftSize) return true;
+
+    QMutexLocker locker(&m_fftMutex);
+
+    // Clean up old resources
     cleanupFFT();
 
-    // 2) Guardar nuevo tamaño
     m_fftSize = size;
 
-    // 3) Regenerar la ventana con el nuevo tamaño
+    // Reinitialize with new size
+    if (!initializeFFT()) {
+        qCritical() << "Failed to reinitialize FFT with size" << size;
+        return false;
+    }
+
     generateWindow();
-
-    // 4) (Re)inicializar FFT: reserva buffers y crea el plan
-    initializeFFT();
-
-    qDebug() << "[FFT] setFFTSize =>" << m_fftSize
-             << "window and FFT reinitialized.";
+    return true;
 }
-
 
 void FFTProcessor::setWindowType(WindowType type)
 {
@@ -151,31 +68,98 @@ void FFTProcessor::setWindowType(WindowType type)
     generateWindow();
 }
 
-void FFTProcessor::initializeFFT()
+bool FFTProcessor::processFFT(const float* input, float* magnitudeOutput, float* phaseOutput)
 {
-    // Primero, limpia cualquier estado previo
-    cleanupFFT();
+    if (!input || !magnitudeOutput || !m_plan) {
+        return false;
+    }
 
-    // Reserva el buffer real de entrada
-    m_inputRealBuffer = (float*)fftwf_alloc_real(m_fftSize);
-    Q_ASSERT(m_inputRealBuffer);
+    QMutexLocker locker(&m_fftMutex);
 
-    // Reserva el buffer complejo de salida (N/2+1 celdas)
-    int complexSize = m_fftSize/2 + 1;
-    m_fftBuffer = (fftwf_complex*)fftwf_alloc_complex(complexSize);
-    Q_ASSERT(m_fftBuffer);
+    // Apply window function
+    applyWindow(const_cast<float*>(input), m_windowBuffer, m_fftSize);
 
-    // Crea el plan real→complex
-    m_plan = fftwf_plan_dft_r2c_1d(
-        m_fftSize,
-        m_inputRealBuffer,
-        m_fftBuffer,
-        FFTW_MEASURE
-        );
-    Q_ASSERT(m_plan);
+    // Copy windowed data to input buffer
+    std::memcpy(m_inputBuffer, input, m_fftSize * sizeof(float));
+
+    // Execute FFT
+    fftwf_execute(m_plan);
+
+    // Extract magnitude and phase
+    const int numBins = m_fftSize / 2 + 1;
+    for (int i = 0; i < numBins; ++i) {
+        const float real = m_outputBuffer[i][0];
+        const float imag = m_outputBuffer[i][1];
+
+        magnitudeOutput[i] = std::sqrt(real * real + imag * imag);
+
+        if (phaseOutput) {
+            phaseOutput[i] = std::atan2(imag, real);
+        }
+    }
+
+    return true;
 }
 
+void FFTProcessor::convertToDecibels(float* data, int size, float minDb)
+{
+    // Vectorized conversion to decibels
+    for (int i = 0; i < size; ++i) {
+        if (data[i] > 0.0f) {
+            data[i] = 20.0f * std::log10(data[i]);
+            if (data[i] < minDb) {
+                data[i] = minDb;
+            }
+        } else {
+            data[i] = minDb;
+        }
+    }
+}
 
+void FFTProcessor::applyWindow(float* data, const float* window, int size)
+{
+    // SIMD-optimized windowing (if available)
+#ifdef __AVX__
+    const int simdSize = size & ~7; // Round down to multiple of 8
+    for (int i = 0; i < simdSize; i += 8) {
+        __m256 dataVec = _mm256_loadu_ps(&data[i]);
+        __m256 windowVec = _mm256_loadu_ps(&window[i]);
+        __m256 result = _mm256_mul_ps(dataVec, windowVec);
+        _mm256_storeu_ps(&data[i], result);
+    }
+    // Handle remaining elements
+    for (int i = simdSize; i < size; ++i) {
+        data[i] *= window[i];
+    }
+#else
+    for (int i = 0; i < size; ++i) {
+        data[i] *= window[i];
+    }
+#endif
+}
+
+bool FFTProcessor::initializeFFT()
+{
+    // Allocate aligned memory for SIMD operations
+    m_windowBuffer = static_cast<float*>(fftwf_alloc_real(m_fftSize));
+    m_inputBuffer = static_cast<float*>(fftwf_alloc_real(m_fftSize));
+    m_outputBuffer = static_cast<fftwf_complex*>(fftwf_alloc_complex(m_fftSize / 2 + 1));
+
+    if (!m_windowBuffer || !m_inputBuffer || !m_outputBuffer) {
+        cleanupFFT();
+        return false;
+    }
+
+    // Create FFTW plan
+    m_plan = fftwf_plan_dft_r2c_1d(m_fftSize, m_inputBuffer, m_outputBuffer, FFTW_MEASURE);
+
+    if (!m_plan) {
+        cleanupFFT();
+        return false;
+    }
+
+    return true;
+}
 
 void FFTProcessor::cleanupFFT()
 {
@@ -183,606 +167,474 @@ void FFTProcessor::cleanupFFT()
         fftwf_destroy_plan(m_plan);
         m_plan = nullptr;
     }
-    if (m_inputRealBuffer) {
-        fftwf_free(m_inputRealBuffer);
-        m_inputRealBuffer = nullptr;
+    if (m_windowBuffer) {
+        fftwf_free(m_windowBuffer);
+        m_windowBuffer = nullptr;
     }
-    if (m_fftBuffer) {
-        fftwf_free(m_fftBuffer);
-        m_fftBuffer = nullptr;
+    if (m_inputBuffer) {
+        fftwf_free(m_inputBuffer);
+        m_inputBuffer = nullptr;
+    }
+    if (m_outputBuffer) {
+        fftwf_free(m_outputBuffer);
+        m_outputBuffer = nullptr;
     }
 }
 
-
 void FFTProcessor::generateWindow()
 {
-    m_window.resize(m_fftSize);
+    if (!m_windowBuffer) return;
+
+    const float N = static_cast<float>(m_fftSize - 1);
+
     switch (m_windowType) {
     case Hanning:
         for (int i = 0; i < m_fftSize; ++i) {
-            m_window[i] = 0.5f * (1 - qCos(2 * M_PI * i / (m_fftSize - 1)));
+            m_windowBuffer[i] = 0.5f * (1.0f - std::cos(2.0f * M_PI * i / N));
         }
         break;
     case Hamming:
         for (int i = 0; i < m_fftSize; ++i) {
-            m_window[i] = 0.54f - 0.46f * qCos(2 * M_PI * i / (m_fftSize - 1));
+            m_windowBuffer[i] = 0.54f - 0.46f * std::cos(2.0f * M_PI * i / N);
         }
         break;
     case Blackman:
         for (int i = 0; i < m_fftSize; ++i) {
-            m_window[i] = 0.42f - 0.5f * qCos(2 * M_PI * i / (m_fftSize - 1))
-            + 0.08f * qCos(4 * M_PI * i / (m_fftSize - 1));
+            const float cos1 = std::cos(2.0f * M_PI * i / N);
+            const float cos2 = std::cos(4.0f * M_PI * i / N);
+            m_windowBuffer[i] = 0.42f - 0.5f * cos1 + 0.08f * cos2;
         }
         break;
     case Rectangle:
     default:
-        for (int i = 0; i < m_fftSize; ++i) {
-            m_window[i] = 1.0f;
-        }
+        std::fill(m_windowBuffer, m_windowBuffer + m_fftSize, 1.0f);
         break;
     }
 }
 
+// ============================================================================
+// LevelAnalyzer Implementation
+// ============================================================================
 
-bool FFTProcessor::processFFT(const QVector<float>& input, QVector<float>& output)
+LevelAnalyzer::LevelAnalyzer(int sampleRate)
+    : m_peakDecay(std::exp(-1.0f / (0.3f * sampleRate))) // 300ms decay
+    , m_rmsDecay(std::exp(-1.0f / (0.1f * sampleRate)))  // 100ms decay
+    , m_vuDecay(std::exp(-1.0f / (0.3f * sampleRate)))   // 300ms decay
+    , m_lastUpdate(std::chrono::steady_clock::now())
 {
-    // 1) Precondiciones
-    Q_ASSERT(input.size() == m_fftSize);
-    Q_ASSERT(m_plan);
-    Q_ASSERT(m_inputRealBuffer);
-    Q_ASSERT(m_fftBuffer);
-
-    if (input.size() != m_fftSize || !m_plan) {
-        qWarning() << "[FFT] Bad preconditions: input.size() =" << input.size()
-        << "m_fftSize=" << m_fftSize
-        << "plan?" << (m_plan != nullptr);
-        return false;
-    }
-
-    // 2) Copiar + ventana
-    for (int i = 0; i < m_fftSize; ++i) {
-        Q_ASSERT(i < m_window.size());
-        m_inputRealBuffer[i] = input[i] * m_window[i];
-    }
-    qDebug() << "[FFT] Copied inputRealBuffer[0..2] ="
-             << m_inputRealBuffer[0] << m_inputRealBuffer[1] << m_inputRealBuffer[2];
-
-    // 3) Ejecutar FFTW
-    fftwf_execute(m_plan);
-    qDebug() << "[FFT] fftwf_execute completed";
-
-    // 4) Extraer magnitudes
-    int outSize = m_fftSize/2 + 1;
-    output.resize(outSize);
-
-    // **Verifica que m_fftBuffer tenga al menos outSize filas y 2 columnas**
-    for (int i = 0; i < outSize; ++i) {
-        // Si esto falla, buffer mal dimensionado
-        Q_ASSERT(i < m_fftSize);
-        // Suponemos que m_fftBuffer[i] es un puntero a dos floats
-        float re = m_fftBuffer[i][0];
-        float im = m_fftBuffer[i][1];
-        if (!std::isfinite(re) || !std::isfinite(im)) {
-            qWarning() << "[FFT] Non-finite FFT result at bin" << i << "re=" << re << "im=" << im;
-        }
-        output[i] = qSqrt(re*re + im*im);
-    }
-    qDebug() << "[FFT] output[0..2] =" << output.mid(0,3);
-
-    return true;
 }
 
-
-
-void FFTProcessor::applyWindow(QVector<float>& data)
+void LevelAnalyzer::processSamples(const float* samples, int count)
 {
-    if (data.size() != m_fftSize || m_window.size() != m_fftSize) {
-        return;
+    if (!samples || count <= 0) return;
+
+    float peak = 0.0f;
+    float sumSquares = 0.0f;
+
+    // Vectorized level analysis
+    for (int i = 0; i < count; ++i) {
+        const float sample = std::abs(samples[i]);
+        peak = std::max(peak, sample);
+        sumSquares += sample * sample;
     }
 
-    for (int i = 0; i < m_fftSize; ++i) {
-        data[i] *= m_window[i];
-    }
+    const float rms = std::sqrt(sumSquares / count);
+
+    // Apply decay based on time elapsed
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - m_lastUpdate);
+    float decayFactor = std::exp(-elapsed.count() / 1000000.0f); // Convert to seconds
+    m_lastUpdate = now;
+
+    // Update levels with appropriate decay
+    float currentPeak = m_peakLevel.load();
+    m_peakLevel.store(std::max(peak, currentPeak * m_peakDecay * decayFactor));
+
+    float currentRMS = m_rmsLevel.load();
+    m_rmsLevel.store(std::max(rms, currentRMS * m_rmsDecay * decayFactor));
+
+    float currentVU = m_vuLevel.load();
+    m_vuLevel.store(std::max(rms, currentVU * m_vuDecay * decayFactor));
 }
 
-void FFTProcessor::convertToDecibels(QVector<float>& data, float minDb)
+void LevelAnalyzer::reset()
 {
-    for (float& value : data) {
-        if (value > 0.0f) {
-            value = 20.0f * log10f(value);
-            if (value < minDb) {
-                value = minDb;
-            }
-        } else {
-            value = minDb;
-        }
-    }
+    m_peakLevel.store(0.0f);
+    m_rmsLevel.store(0.0f);
+    m_vuLevel.store(0.0f);
+    m_lastUpdate = std::chrono::steady_clock::now();
 }
 
 // ============================================================================
 // AudioProcessor Implementation
 // ============================================================================
 
-AudioProcessor::AudioProcessor(const AudioConfiguration& config,
-                               QObject* parent)
+AudioProcessor::AudioProcessor(const AudioConfiguration& config, QObject* parent)
     : QObject(parent)
     , m_config(config)
-    , m_isInitialized(false)
-    , m_enabled(true)
-    , m_fftSize(config.fftSize)
-    , m_overlap(config.overlap)
-    , m_spectrogramHistory(config.spectrogramHistory)
-    , m_waveformBufferSize(config.waveformBufferSize)
-    , m_minFrequency(config.minFrequency)
-    , m_maxFrequency(config.maxFrequency)
-    , m_samplesProcessed(0)
+    , m_fftProcessor(std::make_unique<FFTProcessor>(config.fftSize,
+                                                    static_cast<FFTProcessor::WindowType>(config.windowType)))
+    , m_levelAnalyzer(std::make_unique<LevelAnalyzer>(44100)) // Default sample rate
+    , m_processingTimer(new QTimer(this))
+    , m_processingThread(nullptr)
 {
-    // Inicializar componentes
-    m_waveformBuffer = std::make_unique<AudioBuffer>(m_waveformBufferSize);
-    m_fftProcessor = std::make_unique<FFTProcessor>(m_fftSize);
+    // Initialize buffers
+    m_workBuffer.resize(config.fftSize * 2);
+    m_fftInput.resize(config.fftSize);
+    m_magnitudeOutput.resize(config.fftSize / 2 + 1);
+    m_waveformBuffer.resize(config.waveformBufferSize);
 
-    // Conectar señales de error
-    connect(this, &AudioProcessor::processingError,
-            this, &AudioProcessor::handleProcessingError);
-
-    qDebug() << "AudioProcessor initialized with FFT size:" << m_fftSize;
-}
-
-// AudioProcessor::~AudioProcessor()
-// {
-//     qDebug() << "AudioProcessor destroyed";
-// }
-
-void AudioProcessor::setFFTSize(int size)
-{
-    QMutexLocker locker(&m_processingMutex);
-
-    if (size == m_fftSize) return;
-
-    m_fftSize = size;
-    m_overlap = size / 2; // 50% overlap por defecto
-
-    if (m_fftProcessor) {
-        m_fftProcessor->setFFTSize(size);
+    // Initialize spectrogram ring buffer
+    m_spectrogramRingBuffer.resize(config.spectrogramHistory);
+    for (auto& row : m_spectrogramRingBuffer) {
+        row.resize(config.fftSize / 2 + 1);
     }
 
-    // Redimensionar buffer de procesamiento
-    m_processingBuffer.clear();
-    m_processingBuffer.reserve(size * 2);
+    // Initialize smoothing
+    m_previousSpectrum.resize(config.fftSize / 2 + 1, 0.0f);
 
-    qDebug() << "FFT size set to:" << m_fftSize << "overlap:" << m_overlap;
+    // Setup processing timer
+    m_processingTimer->setInterval(config.updateRateMs);
+    connect(m_processingTimer, &QTimer::timeout, this, &AudioProcessor::processAudioBuffer);
+
+    // Initialize performance tracking
+    m_lastProcessTime = std::chrono::steady_clock::now();
+
+    qDebug() << "AudioProcessor initialized with FFT size:" << config.fftSize
+             << "update rate:" << config.updateRateMs << "ms";
 }
 
-int AudioProcessor::getFFTSize() const
+AudioProcessor::~AudioProcessor()
 {
-    QMutexLocker locker(&m_processingMutex);
-    return m_fftSize;
-}
-
-void AudioProcessor::setOverlap(int samples)
-{
-    QMutexLocker locker(&m_processingMutex);
-
-    if (samples >= 0 && samples < m_fftSize) {
-        m_overlap = samples;
-        qDebug() << "Overlap set to:" << m_overlap << "samples";
+    stop();
+    if (m_processingThread) {
+        m_processingThread->quit();
+        m_processingThread->wait();
     }
 }
 
-void AudioProcessor::setSpectrogramHistory(int frames)
+bool AudioProcessor::pushAudioData(const float* samples, int count, const QAudioFormat& format)
 {
-    QMutexLocker locker(&m_processingMutex);
-
-    if (frames > 0 && frames <= 1000) {
-        m_spectrogramHistory = frames;
-
-        // Redimensionar datos del espectrograma
-        while (m_spectrogramData.size() > frames) {
-            m_spectrogramData.removeFirst();
-        }
-
-        qDebug() << "Spectrogram history set to:" << m_spectrogramHistory << "frames";
-    }
-}
-
-void AudioProcessor::setWindowType(FFTProcessor::WindowType type)
-{
-    QMutexLocker locker(&m_processingMutex);
-
-    if (m_fftProcessor) {
-        m_fftProcessor->setWindowType(type);
-        qDebug() << "Window type set to:" << type;
-    }
-}
-
-FFTProcessor::WindowType AudioProcessor::getWindowType() const
-{
-    QMutexLocker locker(&m_processingMutex);
-    return m_fftProcessor ? m_fftProcessor->getWindowType() : FFTProcessor::Hanning;
-}
-
-void AudioProcessor::setWaveformBufferSize(int samples)
-{
-    QMutexLocker locker(&m_processingMutex);
-
-    if (samples > 0 && samples <= 32768) {
-        m_waveformBufferSize = samples;
-        if (m_waveformBuffer) {
-            m_waveformBuffer->setMaxSize(samples);
-        }
-        qDebug() << "Waveform buffer size set to:" << m_waveformBufferSize;
-    }
-}
-
-int AudioProcessor::getWaveformBufferSize() const
-{
-    QMutexLocker locker(&m_processingMutex);
-    return m_waveformBufferSize;
-}
-
-void AudioProcessor::setFrequencyRange(float minFreq, float maxFreq)
-{
-    QMutexLocker locker(&m_processingMutex);
-
-    if (minFreq >= 0 && maxFreq > minFreq && maxFreq <= 50000) {
-        m_minFrequency = minFreq;
-        m_maxFrequency = maxFreq;
-        qDebug() << "Frequency range set to:" << minFreq << "-" << maxFreq << "Hz";
-    }
-}
-
-void AudioProcessor::getFrequencyRange(float& minFreq, float& maxFreq) const
-{
-    QMutexLocker locker(&m_processingMutex);
-    minFreq = m_minFrequency;
-    maxFreq = m_maxFrequency;
-}
-
-bool AudioProcessor::processAudioData(const QVector<float>& samples,
-                                      const QAudioFormat& format,
-                                      VisualizationData& vizData)
-{
-    qDebug() << "[AP] ENTER processAudioData:"
-             << "samples.size() =" << samples.size()
-             << "rate=" << format.sampleRate()
-             << "ch="   << format.channelCount()
-             << "fftSize=" << m_fftSize
-             << "overlap=" << m_overlap;
-
-    // Precondiciones
-    Q_ASSERT(m_enabled);
-    Q_ASSERT(!samples.isEmpty());
-    Q_ASSERT(format.isValid());
-
-    if (!m_enabled) {
-        qWarning() << "[AP] disabled, exiting";
-        return false;
-    }
-    if (samples.isEmpty()) {
-        qWarning() << "[AP] no samples, exiting";
+    if (!samples || count <= 0 || !m_isRunning.load()) {
         return false;
     }
 
-    QMutexLocker locker(&m_processingMutex);
+    // Update audio format if changed
+    const int newSampleRate = format.sampleRate();
+    const int newChannels = format.channelCount();
 
-    try {
-        // 1) Inicialización
-        {
-            QElapsedTimer t; t.start();
-            ensureInitialized(format);
-            qDebug() << "[AP] ensureInitialized done in" << t.nsecsElapsed()/1000 << "µs";
-        }
+    if (newSampleRate != m_sampleRate.load() || newChannels != m_channels.load()) {
+        m_sampleRate.store(newSampleRate);
+        m_channels.store(newChannels);
+        m_levelAnalyzer = std::make_unique<LevelAnalyzer>(newSampleRate);
+    }
 
-        // 2) Acumular waveform
-        {
-            QElapsedTimer t; t.start();
-            m_waveformBuffer->append(samples);
-            qDebug() << "[AP] append to waveformBuffer in" << t.nsecsElapsed()/1000 << "µs"
-                     << "waveformBuffer.size() =" << m_waveformBuffer->size();
-        }
-
-        // 3) Procesar forma de onda
-        {
-            QElapsedTimer t; t.start();
-            processWaveform(vizData);
-            qDebug() << "[AP] processWaveform done in" << t.nsecsElapsed()/1000 << "µs"
-                     << "vizData.waveform.size() =" << vizData.waveform.size();
-        }
-
-        // 4) Acumular FFT buffer
-        {
-            QElapsedTimer t; t.start();
-            m_processingBuffer.append(samples);
-            qDebug() << "[AP] append to processingBuffer in" << t.nsecsElapsed()/1000 << "µs"
-                     << "processingBuffer.size() =" << m_processingBuffer.size();
-        }
-
-        // 5) Procesar espectro
-        if (m_processingBuffer.size() >= m_fftSize) {
-            QElapsedTimer t; t.start();
-            processSpectrum(m_processingBuffer, vizData);
-            qDebug() << "[AP] processSpectrum done in" << t.nsecsElapsed()/1000 << "µs"
-                     << "vizData.spectrum.size() =" << vizData.spectrum.size();
-
-            // Q_ASSERT para evitar índice fuera de rango
-            int samplesToRemove = m_fftSize - m_overlap;
-            Q_ASSERT(samplesToRemove > 0);
-            if (samplesToRemove > 0 && samplesToRemove < m_processingBuffer.size()) {
-                m_processingBuffer.remove(0, samplesToRemove);
-                qDebug() << "[AP] removed" << samplesToRemove
-                         << "samples, new processingBuffer.size() ="
-                         << m_processingBuffer.size();
-            }
-        } else {
-            qDebug() << "[AP] not enough data for FFT,"
-                     << "need" << m_fftSize << "have" << m_processingBuffer.size();
-        }
-
-        // 6) Rellenar vizData metadatos
-        vizData.sampleRate = format.sampleRate();
-        vizData.channels   = format.channelCount();
-        vizData.timestamp  = QDateTime::currentMSecsSinceEpoch();
-        vizData.spectrogram = m_spectrogramData;
-
-        // 7) Estadísticas internas
-        m_samplesProcessed += samples.size();
-        qDebug() << "[AP] total samples processed =" << m_samplesProcessed;
-
-        qDebug() << "[AP] EXIT processAudioData OK";
-        return true;
-
-    } catch (const std::exception& e) {
-        qCritical() << "[AP] Exception in processAudioData:" << e.what();
-        emit processingError(QString("Processing error: %1").arg(e.what()));
-        return false;
-    } catch (...) {
-        qCritical() << "[AP] Unknown exception in processAudioData";
-        emit processingError("Unknown processing error");
+    // Push to lock-free buffer
+    if (!m_audioBuffer.push(samples, count)) {
+        // Buffer overflow - update statistics
+        QMutexLocker locker(&m_statsMutex);
+        m_stats.bufferUnderruns++;
         return false;
     }
+
+    return true;
 }
 
-void AudioProcessor::processWaveform(VisualizationData& vizData)
+bool AudioProcessor::getVisualizationData(VisualizationData& vizData)
 {
-    // 1) Tomar los últimos samples
-    int waveformSamples = qMin(2048, m_waveformBufferSize);
-    QVector<float> recent = m_waveformBuffer->getLastSamples(waveformSamples);
-    if (recent.isEmpty()) {
-        vizData.waveform.clear();
-        return;
+    const int readBuffer = m_currentReadBuffer.load();
+    auto& buffer = m_vizBuffers[readBuffer];
+
+    if (!buffer.ready.load()) {
+        return false;
     }
 
-    // 2) (Opcional) Normalizar a [-1,1] por si hay outliers
-    float maxAbs = 0.0f;
-    for (float v : recent) maxAbs = qMax(maxAbs, qAbs(v));
-    if (maxAbs > 1.0f) {
-        for (float &v : recent) v /= maxAbs;
-    }
+    QMutexLocker locker(&buffer.mutex);
+    vizData = buffer.data;
+    buffer.ready.store(false);
 
-    // 3) Remuestrear a un tamaño fijo (512) para la UI
-    const int targetSize = 512;
-    if (recent.size() > targetSize) {
-        vizData.waveform = resampleForVisualization(recent, targetSize);
-    } else {
-        vizData.waveform = recent;
-    }
+    return true;
 }
 
-
-void AudioProcessor::processSpectrum(const QVector<float>& samples, VisualizationData& vizData)
+void AudioProcessor::setConfiguration(const AudioConfiguration& config)
 {
-    qDebug() << "[AP::processSpectrum] ENTER. samples.size() =" << samples.size()
-    << "fftSize=" << m_fftSize;
-
-    // 1) Comprobar tamaño
-    if (samples.size() < m_fftSize) {
-        qWarning() << "[AP::processSpectrum] Not enough samples for FFT";
+    if (!config.isValid()) {
+        qWarning() << "Invalid audio configuration provided";
         return;
     }
 
-    // 2) Preparar input FFT
-    QVector<float> fftInput(m_fftSize);
-    int startPos = samples.size() - m_fftSize;
-    Q_ASSERT(startPos >= 0);
-    for (int i = 0; i < m_fftSize; ++i) {
-        fftInput[i] = samples.at(startPos + i);
-    }
-    qDebug() << "[AP::processSpectrum] fftInput prepared. first =" << fftInput.first()
-             << "last =" << fftInput.last();
+    m_config = config;
 
-    // 3) Ejecutar FFT
-    QVector<float> spectrum;
-    bool fftOk = false;
-    try {
-        qDebug() << "[AP::processSpectrum] Calling m_fftProcessor->processFFT()";
-        Q_ASSERT(m_fftProcessor != nullptr);
-        if (!m_fftProcessor) {
-            qCritical() << "[AP::processSpectrum] ERROR: m_fftProcessor is null!";
-            return;
-        }
-        fftOk = m_fftProcessor->processFFT(fftInput, spectrum);
-        qDebug() << "[AP::processSpectrum] FFT returned" << fftOk
-                 << "spectrum.size() =" << spectrum.size();
-    } catch (const std::exception& e) {
-        qCritical() << "[AP::processSpectrum] Exception in processFFT:" << e.what();
-        return;
-    } catch (...) {
-        qCritical() << "[AP::processSpectrum] Unknown exception in processFFT";
-        return;
-    }
-    if (!fftOk) {
-        qWarning() << "[AP::processSpectrum] FFT processing failed";
-        return;
+    // Update FFT processor
+    m_fftProcessor->setFFTSize(config.fftSize);
+    m_fftProcessor->setWindowType(static_cast<FFTProcessor::WindowType>(config.windowType));
+
+    // Update timer
+    m_processingTimer->setInterval(config.updateRateMs);
+
+    // Resize buffers
+    m_workBuffer.resize(config.fftSize * 2);
+    m_fftInput.resize(config.fftSize);
+    m_magnitudeOutput.resize(config.fftSize / 2 + 1);
+    m_waveformBuffer.resize(config.waveformBufferSize);
+
+    // Resize spectrogram
+    m_spectrogramRingBuffer.resize(config.spectrogramHistory);
+    for (auto& row : m_spectrogramRingBuffer) {
+        row.resize(config.fftSize / 2 + 1);
     }
 
-    // 4) Suavizar
-    try {
-        qDebug() << "[AP::processSpectrum] Calling smoothSpectrum()";
-        smoothSpectrum(spectrum);
-        qDebug() << "[AP::processSpectrum] After smoothSpectrum, spectrum[0..2] ="
-                 << spectrum.mid(0,3);
-    } catch (const std::exception& e) {
-        qCritical() << "[AP::processSpectrum] Exception in smoothSpectrum:" << e.what();
-        return;
-    } catch (...) {
-        qCritical() << "[AP::processSpectrum] Unknown exception in smoothSpectrum";
-        return;
-    }
+    m_previousSpectrum.resize(config.fftSize / 2 + 1, 0.0f);
 
-    // 5) Decibelios
-    try {
-        qDebug() << "[AP::processSpectrum] Converting to decibels";
-        FFTProcessor::convertToDecibels(spectrum, -80.0f);
-        qDebug() << "[AP::processSpectrum] After convertToDecibels, spectrum[0..2] ="
-                 << spectrum.mid(0,3);
-    } catch (const std::exception& e) {
-        qCritical() << "[AP::processSpectrum] Exception in convertToDecibels:" << e.what();
-        return;
-    } catch (...) {
-        qCritical() << "[AP::processSpectrum] Unknown exception in convertToDecibels";
-        return;
-    }
-
-    // 6) Asignar al vizData
-    vizData.spectrum = spectrum;
-
-    // 7) Actualizar espectrograma
-    try {
-        qDebug() << "[AP::processSpectrum] Updating spectrogram";
-        updateSpectrogram(spectrum);
-        qDebug() << "[AP::processSpectrum] Spectrogram updated. spectrogramData rows="
-                 << m_spectrogramData.size();
-    } catch (const std::exception& e) {
-        qCritical() << "[AP::processSpectrum] Exception in updateSpectrogram:" << e.what();
-        return;
-    } catch (...) {
-        qCritical() << "[AP::processSpectrum] Unknown exception in updateSpectrogram";
-        return;
-    }
-
-    // 8) Guardar para siguiente suavizado
-    m_previousSpectrum = spectrum;
-
-    qDebug() << "[AP::processSpectrum] EXIT OK";
+    qDebug() << "AudioProcessor configuration updated";
 }
 
-void AudioProcessor::updateSpectrogram(const QVector<float>& spectrum)
+void AudioProcessor::start()
 {
-    if (spectrum.isEmpty()) return;
+    if (m_isRunning.load()) return;
 
-    // Agregar nuevo frame al espectrograma
-    m_spectrogramData.append(spectrum);
-
-    // Mantener solo el historial configurado
-    while (m_spectrogramData.size() > m_spectrogramHistory) {
-        m_spectrogramData.removeFirst();
+    // Create processing thread if needed
+    if (!m_processingThread) {
+        m_processingThread = new QThread(this);
+        m_processingTimer->moveToThread(m_processingThread);
+        m_processingThread->start(QThread::HighPriority);
     }
+
+    m_isRunning.store(true);
+    m_processingTimer->start();
+
+    qDebug() << "AudioProcessor started";
 }
 
-void AudioProcessor::smoothSpectrum(QVector<float>& spectrum, float smoothingFactor)
+void AudioProcessor::stop()
 {
-    if (m_previousSpectrum.size() != spectrum.size()) {
-        m_previousSpectrum = spectrum;
-        return;
-    }
+    if (!m_isRunning.load()) return;
 
-    for (int i = 0; i < spectrum.size(); ++i) {
-        spectrum[i] = smoothingFactor * m_previousSpectrum[i] + (1.0f - smoothingFactor) * spectrum[i];
-    }
-}
+    m_isRunning.store(false);
+    m_processingTimer->stop();
 
-QVector<float> AudioProcessor::resampleForVisualization(const QVector<float>& input, int targetSize)
-{
-    if (input.size() <= targetSize) {
-        return input;
-    }
-
-    QVector<float> output(targetSize);
-    float ratio = (float)input.size() / targetSize;
-
-    for (int i = 0; i < targetSize; ++i) {
-        int sourceIndex = (int)(i * ratio);
-        if (sourceIndex < input.size()) {
-            output[i] = input[sourceIndex];
-        }
-    }
-
-    return output;
-}
-
-void AudioProcessor::ensureInitialized(const QAudioFormat& format)
-{
-    if (m_isInitialized && m_currentFormat == format) {
-        return;
-    }
-
-    m_currentFormat = format;
-    m_isInitialized = true;
-
-    qDebug() << "AudioProcessor initialized for format:"
-             << format.sampleRate() << "Hz"
-             << format.channelCount() << "ch"
-             << format.sampleFormat();
+    qDebug() << "AudioProcessor stopped";
 }
 
 void AudioProcessor::reset()
 {
-    QMutexLocker locker(&m_processingMutex);
+    m_audioBuffer.clear();
 
-    if (m_waveformBuffer) {
-        m_waveformBuffer->clear();
+    // Reset visualization buffers
+    for (auto& buffer : m_vizBuffers) {
+        QMutexLocker locker(&buffer.mutex);
+        buffer.ready.store(false);
+        buffer.data = VisualizationData{};
     }
 
-    m_processingBuffer.clear();
-    m_samplesProcessed = 0;
+    // Reset spectrogram
+    m_spectrogramWritePos.store(0);
+    for (auto& row : m_spectrogramRingBuffer) {
+        std::fill(row.begin(), row.end(), 0.0f);
+    }
 
-    clearHistory();
+    // Reset smoothing
+    std::fill(m_previousSpectrum.begin(), m_previousSpectrum.end(), 0.0f);
+
+    // Reset level analyzer
+    m_levelAnalyzer->reset();
+
+    // Reset statistics
+    QMutexLocker locker(&m_statsMutex);
+    m_stats = PerformanceStats{};
+    m_processedFrames = 0;
 
     qDebug() << "AudioProcessor reset";
 }
 
-void AudioProcessor::clearHistory()
+AudioProcessor::PerformanceStats AudioProcessor::getPerformanceStats() const
 {
-    m_spectrogramData.clear();
-    m_previousSpectrum.clear();
-
-    qDebug() << "AudioProcessor history cleared";
+    QMutexLocker locker(&m_statsMutex);
+    return m_stats;
 }
 
-void AudioProcessor::handleProcessingError(const QString& error)
+void AudioProcessor::processAudioBuffer()
 {
-    qWarning() << "AudioProcessor error:" << error;
+    if (!m_isRunning.load()) return;
+
+    auto startTime = std::chrono::steady_clock::now();
+
+    // Get available data
+    const size_t available = m_audioBuffer.available();
+    if (available < static_cast<size_t>(m_config.fftSize)) {
+        return; // Not enough data
+    }
+
+    // Pop data from buffer
+    const size_t toPop = std::min(available, m_workBuffer.size());
+    const size_t actuallyPopped = m_audioBuffer.pop(m_workBuffer.data(), toPop);
+
+    if (actuallyPopped == 0) return;
+
+    // Get current write buffer
+    const int writeBuffer = m_currentWriteBuffer.load();
+    auto& buffer = m_vizBuffers[writeBuffer];
+
+    QMutexLocker locker(&buffer.mutex);
+
+    // Process FFT if we have enough data
+    if (processFFTData(m_workBuffer.data(), actuallyPopped)) {
+        // Update spectrogram
+        updateSpectrogram(m_magnitudeOutput);
+
+        // Fill visualization data
+        buffer.data.spectrum = QVector<float>(m_magnitudeOutput.begin(), m_magnitudeOutput.end());
+        buffer.data.fftSize = m_config.fftSize;
+        buffer.data.frequencyResolution = static_cast<float>(m_sampleRate.load()) / m_config.fftSize;
+    }
+
+    // Update waveform
+    updateWaveform(m_workBuffer.data(), actuallyPopped);
+    downsampleWaveform(m_waveformBuffer.data(), m_waveformBuffer.size(),
+                       buffer.data.waveform.data(), 512);
+    buffer.data.waveform.resize(512);
+
+    // Process levels
+    processLevelsVector(m_workBuffer.data(), actuallyPopped);
+    buffer.data.peakLevel = m_levelAnalyzer->getPeakLevel();
+    buffer.data.rmsLevel = m_levelAnalyzer->getRMSLevel();
+
+    // Fill metadata
+    buffer.data.sampleRate = m_sampleRate.load();
+    buffer.data.channels = m_channels.load();
+    buffer.data.timestamp = QDateTime::currentMSecsSinceEpoch();
+
+    // Copy spectrogram
+    buffer.data.spectrogram.clear();
+    buffer.data.spectrogram.reserve(m_config.spectrogramHistory);
+    for (const auto& row : m_spectrogramRingBuffer) {
+        buffer.data.spectrogram.append(QVector<float>(row.begin(), row.end()));
+    }
+
+    // Mark buffer ready and switch
+    buffer.ready.store(true);
+    switchVisualizationBuffers();
+
+    // Update performance statistics
+    updatePerformanceStats();
+
+    // Emit signal
+    emit dataReady(buffer.data);
+
+    auto endTime = std::chrono::steady_clock::now();
+    auto processingTime = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
+
+    // Check for performance issues
+    const float processingTimeMs = processingTime.count() / 1000.0f;
+    const float maxAllowedMs = m_config.updateRateMs * 0.8f; // 80% of update period
+
+    if (processingTimeMs > maxAllowedMs) {
+        emit performanceWarning(QString("High processing load: %1ms (limit: %2ms)")
+                                    .arg(processingTimeMs, 0, 'f', 2)
+                                    .arg(maxAllowedMs, 0, 'f', 2));
+    }
 }
 
-void AudioProcessor::applyConfiguration(const AudioConfiguration& config)
+bool AudioProcessor::processFFTData(const float* samples, int count)
 {
-    QMutexLocker locker(&m_processingMutex);
+    if (count < m_config.fftSize) return false;
 
-    // Guardar nueva configuración
-    m_config = config;
+    // Take the last FFT size samples
+    const int offset = count - m_config.fftSize;
+    std::copy(samples + offset, samples + offset + m_config.fftSize, m_fftInput.begin());
 
-    // FFT y solapamiento
-    setFFTSize(config.fftSize);
-    setOverlap(config.overlap);
+    // Process FFT
+    if (!m_fftProcessor->processFFT(m_fftInput.data(), m_magnitudeOutput.data())) {
+        return false;
+    }
 
-    // Historial de espectrograma
-    setSpectrogramHistory(config.spectrogramHistory);
+    // Convert to decibels
+    FFTProcessor::convertToDecibels(m_magnitudeOutput.data(), m_magnitudeOutput.size(), m_config.minDecibels);
 
-    // Buffer de waveform
-    setWaveformBufferSize(config.waveformBufferSize);
+    // Apply smoothing
+    smoothSpectrum(m_magnitudeOutput);
 
-    // Tipo de ventana
-    setWindowType(static_cast<FFTProcessor::WindowType>(config.windowType));
+    return true;
+}
 
-    // Rango de frecuencias
-    m_minFrequency = config.minFrequency;
-    m_maxFrequency = config.maxFrequency;
+void AudioProcessor::updateSpectrogram(const std::vector<float>& spectrum)
+{
+    const int writePos = m_spectrogramWritePos.load();
 
-    qDebug() << "AudioProcessor configuration applied:"
-             << "FFT size =" << m_fftSize
-             << "overlap =" << m_overlap
-             << "spectrogramHistory =" << m_spectrogramHistory
-             << "waveformBufferSize =" << m_waveformBufferSize
-             << "frequencyRange =" << m_minFrequency << "-" << m_maxFrequency
-             << "windowType =" << config.windowType;
+    // Copy spectrum to ring buffer
+    std::copy(spectrum.begin(), spectrum.end(), m_spectrogramRingBuffer[writePos].begin());
+
+    // Update write position
+    m_spectrogramWritePos.store((writePos + 1) % m_config.spectrogramHistory);
+}
+
+void AudioProcessor::updateWaveform(const float* samples, int count)
+{
+    // Simple circular buffer update
+    for (int i = 0; i < count && i < static_cast<int>(m_waveformBuffer.size()); ++i) {
+        m_waveformBuffer[i] = samples[i];
+    }
+}
+
+void AudioProcessor::smoothSpectrum(std::vector<float>& spectrum)
+{
+    if (spectrum.size() != m_previousSpectrum.size()) {
+        m_previousSpectrum = spectrum;
+        return;
+    }
+
+    for (size_t i = 0; i < spectrum.size(); ++i) {
+        spectrum[i] = m_smoothingFactor * m_previousSpectrum[i] +
+                      (1.0f - m_smoothingFactor) * spectrum[i];
+    }
+
+    m_previousSpectrum = spectrum;
+}
+
+void AudioProcessor::updatePerformanceStats()
+{
+    QMutexLocker locker(&m_statsMutex);
+
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastProcessTime);
+
+    m_processedFrames++;
+
+    if (elapsed.count() >= 1000) { // Update every second
+        m_stats.processingLoadPercent = 50.0f; // Placeholder calculation
+        m_stats.averageLatencyMs = m_config.updateRateMs; // Placeholder
+
+        m_lastProcessTime = now;
+        m_processedFrames = 0;
+    }
+}
+
+void AudioProcessor::switchVisualizationBuffers()
+{
+    const int currentWrite = m_currentWriteBuffer.load();
+    const int newWrite = (currentWrite + 1) % 2;
+    const int newRead = currentWrite;
+
+    m_currentWriteBuffer.store(newWrite);
+    m_currentReadBuffer.store(newRead);
+}
+
+void AudioProcessor::processLevelsVector(const float* samples, int count)
+{
+    m_levelAnalyzer->processSamples(samples, count);
+}
+
+void AudioProcessor::downsampleWaveform(const float* input, int inputSize, float* output, int outputSize)
+{
+    if (inputSize <= outputSize) {
+        std::copy(input, input + inputSize, output);
+        return;
+    }
+
+    const float ratio = static_cast<float>(inputSize) / outputSize;
+
+    for (int i = 0; i < outputSize; ++i) {
+        const int sourceIndex = static_cast<int>(i * ratio);
+        output[i] = input[std::min(sourceIndex, inputSize - 1)];
+    }
 }
