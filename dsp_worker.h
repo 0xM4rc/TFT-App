@@ -3,48 +3,102 @@
 
 #include <QObject>
 #include <QVector>
-#include <QTimer>
-#include "audio_db.h"
+#include <QtTypes>
 
+// Forward declaration
+class AudioDb;
+
+/**
+ * @brief Configuración para el procesamiento DSP
+ */
 struct DSPConfig {
-    int sampleRate    = 48000;
-    int blockSize     = 2048;  // muestras por bloque de waveform
-    int fftSize       = 1024;  // ventana FFT
-    int hopSize       = 512;   // salto entre ventanas FFT
+    int blockSize = 1024;       ///< Tamaño del bloque para procesamiento
+    int fftSize = 1024;         ///< Tamaño de la FFT para espectrograma
+    int sampleRate = 44100;     ///< Frecuencia de muestreo
+    bool enableSpectrum = true; ///< Habilitar cálculo de espectro
+    bool enablePeaks = true;    ///< Habilitar detección de picos
+
+    // Constructor por defecto
+    DSPConfig() = default;
+
+    // Constructor con parámetros
+    DSPConfig(int blockSz, int fftSz, int sampleRt = 44100)
+        : blockSize(blockSz)
+        , fftSize(fftSz)
+        , sampleRate(sampleRt)
+    {}
 };
 
-class DSPWorker : public QObject {
+/**
+ * @brief Worker para procesamiento DSP de audio en tiempo real
+ *
+ * Procesa chunks de audio, calcula picos, espectrograma y
+ * almacena resultados en base de datos.
+ */
+class DSPWorker : public QObject
+{
     Q_OBJECT
 
 public:
     explicit DSPWorker(const DSPConfig& cfg, AudioDb* db, QObject* parent = nullptr);
-    ~DSPWorker() override;
+    ~DSPWorker();
+
+    /** Obtiene la configuración actual */
+    DSPConfig getConfig() const;
+
+    /** Obtiene el número total de muestras procesadas */
+    qint64 getTotalSamples() const;
+
+    /** Obtiene el índice del bloque actual */
+    qint64 getBlockIndex() const;
+
+    /** Obtiene el tamaño del buffer de acumulación actual */
+    int getAccumBufferSize() const;
+
+    /** Obtiene las frecuencias correspondientes a cada bin de la FFT */
+    QVector<float> getFrequencyBins() const;
+
+    /** Obtiene información del estado actual como string */
+    QString getStatusInfo() const;
 
 public slots:
-    /// Conectar a chunkReady(buffer, timestamp)
-    void processChunk(const QByteArray& pcmBytes, qint64 timestamp);
+    /** Procesa un chunk de muestras de audio */
+    void processChunk(const QVector<float>& samples, qint64 timestamp);
+
+    /** Procesa las muestras residuales al finalizar */
+    void flushResidual();
+
+    /** Reinicia el estado interno del worker */
+    void reset();
 
 signals:
-    /// Para waveform: min/max de cada bloque
-    void minMaxReady(float minVal, float maxVal, qint64 blockTimestamp);
-    /// Para espectrograma: columna FFT
-    void specColumnReady(const QVector<float>& column, qint64 columnTimestamp);
+    /** Emitido cuando se calculan los valores min/max de un bloque */
+    void minMaxReady(float min, float max, qint64 timestamp);
 
-private slots:
-    /// Puedes usar este timer para tareas periódicas (opcional)
-    void onFlushTimer();
+    /** Emitido cuando está lista una columna del espectrograma */
+    void specColumnReady(const QVector<float>& magnitudes, qint64 timestamp);
+
+    /** Emitido al producirse un error */
+    void errorOccurred(const QString& error);
+
+    /** Emitido periódicamente con estadísticas de procesamiento */
+    void statsUpdated(qint64 blocksProcessed, qint64 samplesProcessed, int bufferSize);
 
 private:
-    DSPConfig      m_cfg;
-    AudioDb*       m_db;             // puntero no-owning a tu AudioDb
-    qint64         m_totalSamples    = 0;  // offset global en muestras
-    int            m_blockIndex      = 0;
+    void handleBlock(const QVector<float>& block, qint64 timestamp);
+    void calculateSpectrum(const QVector<float>& block, qint64 timestamp);
+    QVector<float> calculateHanningWindow(int size) const;
+    QVector<float> applyWindow(const QVector<float>& samples,
+                               const QVector<float>& window) const;
 
-    QVector<float> m_accumBuffer;   // acumulador de muestras float
-    QTimer         m_flushTimer;    // opcional, si quieres periodicidad
+    DSPConfig      m_cfg;             ///< Configuración DSP
+    AudioDb*       m_db;              ///< Puntero a la base de datos
+    QVector<float> m_accumBuffer;     ///< Buffer de acumulación
+    qint64         m_totalSamples = 0;///< Total de muestras procesadas
+    qint64         m_blockIndex = 0;  ///< Índice de bloque
 
-    void handleBlock(const QVector<float>& blockSamples, qint64 timestamp);
-    QVector<float> bytesToFloats(const QByteArray& pcm) const;
+    QVector<float> m_hanningWindow;   ///< Ventana de Hanning
+    bool           m_windowCalculated = false;
 };
 
 #endif // DSP_WORKER_H

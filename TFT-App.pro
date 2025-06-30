@@ -22,7 +22,8 @@ SOURCES += \
     dsp_worker.cpp \
     main.cpp \
     mainwindow.cpp \
-    network_receiver.cpp
+    network_receiver.cpp \
+    waveform_widget.cpp
     #tests/audio_processor_test.cpp \
 
 HEADERS += \
@@ -32,7 +33,8 @@ HEADERS += \
     dsp_worker.h \
     ireceiver.h \
     mainwindow.h \
-    network_receiver.h
+    network_receiver.h \
+    waveform_widget.h
 
 FORMS += \
     mainwindow.ui

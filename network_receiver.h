@@ -2,11 +2,10 @@
 #define NETWORK_RECEIVER_H
 
 #include "ireceiver.h"
-#include <QObject>
-#include <QString>
-#include <QByteArray>
 #include <QTimer>
-#include <gst/gst.h>
+#include <QAudioFormat>
+#include <gst/gstelement.h>
+#include <gst/gstbus.h>
 #include <gst/app/gstappsink.h>
 
 class NetworkReceiver : public IReceiver
@@ -17,18 +16,13 @@ public:
     explicit NetworkReceiver(QObject* parent = nullptr);
     ~NetworkReceiver() override;
 
-    // Función para establecer la URL de origen
     void setUrl(const QString& url);
-
-    // Métodos heredados de IReceiver
     void start() override;
     void stop() override;
 
 signals:
-    // Señal emitida cuando se reciben datos
-    void chunkReady(const QByteArray& data, qint64 timestamp);
-
-    // Señales adicionales para manejo de eventos
+    void audioFormatDetected(const QAudioFormat& format);
+    void floatChunkReady(const QVector<float>& data, qint64 timestamp);
     void streamFinished();
     void errorOccurred(const QString& error);
 
@@ -36,33 +30,30 @@ private slots:
     void processBusMessages();
 
 private:
-    // Métodos privados
-    QString createPipelineString(const QString& url);
-    void cleanup();
-
-    // Callbacks estáticos de GStreamer
-    static GstFlowReturn onNewSample(GstAppSink* appsink, gpointer user_data);
-    static void onEos(GstAppSink* appsink, gpointer user_data);
-    static gboolean onBusMessage(GstBus* bus, GstMessage* message, gpointer user_data);
-
-    // Métodos de manejo de callbacks
+    // Métodos de instancia
     GstFlowReturn handleNewSample(GstAppSink* appsink);
     void handleEos();
-    gboolean handleBusMessage(GstMessage* message);
+    gboolean handleBusMessage(GstMessage* msg);
+    void cleanup();
+    QString createPipelineString(const QString& url);
 
-private:
-    // Variables miembro
+    // Callbacks estáticos (NUEVOS)
+    static GstFlowReturn onNewSample(GstAppSink* sink, gpointer user);
+    static void onEos(GstAppSink* sink, gpointer user);
+    static gboolean onBusMessage(GstBus* bus, GstMessage* msg, gpointer user);
+    static void onPadAdded(GstElement* element, GstPad* pad, gpointer user);  // NUEVO
+
+    // Miembros privados
     QString m_url;
-    bool m_isRunning;
+    bool m_isRunning = false;
 
-    // Elementos de GStreamer
-    GstElement* m_pipeline;
-    GstElement* m_appsink;
-    GstBus* m_bus;
-    guint m_busWatchId;
+    // GStreamer elements
+    GstElement* m_pipeline = nullptr;
+    GstAppSink* m_appsink = nullptr;
+    GstBus* m_bus = nullptr;
 
-    // Timer para procesar mensajes del bus
-    QTimer* m_busTimer;
+    // Qt components
+    QTimer* m_busTimer = nullptr;
 };
 
 #endif // NETWORK_RECEIVER_H
