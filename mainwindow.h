@@ -12,14 +12,16 @@
 #include <QHBoxLayout>
 #include <QIODevice>
 
-#include "audio_receiver.h"  // Tu AudioReceiver personalizado
+#include "audio_db.h"
+#include "audio_receiver.h"
+#include "waveform_widget.h"
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 
 public:
-    MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(AudioDb* db, QWidget* parent = nullptr);
     ~MainWindow();
 
 private slots:
@@ -45,6 +47,9 @@ private:
 
     // Audio format
     QAudioFormat m_format;
+
+    AudioDb*        m_db;
+    WaveformWidget* m_waveformWidget;
 };
 
 #endif // MAINWINDOW_H

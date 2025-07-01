@@ -1,14 +1,16 @@
 #include "mainwindow.h"
+#include "waveform_widget.h"
 #include <QUrl>
 #include <QDebug>
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(AudioDb* db, QWidget* parent)
     : QMainWindow(parent)
     , player(new QMediaPlayer(this))
     , audioOutput(new QAudioOutput(this))
     , micReceiver(nullptr)
     , audioSink(nullptr)
     , sinkDevice(nullptr)
+    , m_db(db)
 {
     // UI setup
     central = new QWidget(this);
@@ -22,7 +24,14 @@ MainWindow::MainWindow(QWidget* parent)
     hlay->addWidget(btnMic);
     vlay->addLayout(hlay);
     vlay->addWidget(status);
+
+    m_waveformWidget = new WaveformWidget(m_db, central);
+    // Por ejemplo lo ponemos debajo del status:
+    vlay->addWidget(m_waveformWidget);
+
     setCentralWidget(central);
+
+
 
     // Configurar formato de audio para micrófono
     AudioConfig micConfig;

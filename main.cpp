@@ -10,6 +10,7 @@
 #include <QFileInfo>
 
 // Tus headers existentes
+#include "mainwindow.h"
 #include "network_receiver.h"
 #include "audio_db.h"
 #include "dsp_worker.h"
@@ -140,6 +141,12 @@ int main(int argc, char *argv[])
         networkReceiver.start();
         captureTimer.start();
     });
+
+    MainWindow w(&audioDb);
+    w.resize(800, 600);
+    w.show();
+
+    return app.exec();
 
     return app.exec();
 }
