@@ -81,3 +81,4 @@ CMakeLists.txt.user*
 .uic/
 /build*/
 test_long_capture.db
+audio_capture.db

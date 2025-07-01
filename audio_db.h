@@ -10,6 +10,16 @@
 #include <QList>
 #include <QtTypes>
 
+// audio_db.h (justo después de la clase AudioDb, o dentro en public:)
+
+struct PeakRecord {
+    qint64 timestamp;
+    float   minValue;
+    float   maxValue;
+};
+Q_DECLARE_TYPEINFO(PeakRecord, Q_MOVABLE_TYPE);
+
+
 /**
  * @brief Clase para manejar el almacenamiento de audio en base de datos SQLite
  */
@@ -88,6 +98,12 @@ public:
      * @return Tamaño en bytes
      */
     qint64 getTotalAudioSize() const;
+
+    QList<PeakRecord> getPeaksByTime(qint64 tStart, qint64 tEnd) const;
+
+    QByteArray getRawBlock(qint64 blockIndex) const;
+
+
 
 signals:
     /**

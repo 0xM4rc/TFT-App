@@ -333,3 +333,41 @@ void AudioDb::logError(const QString& operation, const QSqlError& error) {
     qCritical() << errorMsg;
     emit errorOccurred(errorMsg);
 }
+
+QList<PeakRecord> AudioDb::getPeaksByTime(qint64 tStart, qint64 tEnd) const
+{
+    QList<PeakRecord> out;
+    if (!m_initialized) return out;
+
+    QSqlQuery q(m_db);
+    q.prepare(R"(
+        SELECT timestamp, min_value, max_value
+          FROM audio_peaks
+         WHERE timestamp BETWEEN ? AND ?
+         ORDER BY timestamp ASC
+    )");
+    q.addBindValue(tStart);
+    q.addBindValue(tEnd);
+
+    if (!q.exec()) {
+        qWarning() << "Error leyendo picos por tiempo:" << q.lastError().text();
+        return out;
+    }
+
+    while (q.next()) {
+        PeakRecord rec;
+        rec.timestamp = q.value(0).toLongLong();
+        rec.minValue  = q.value(1).toFloat();
+        rec.maxValue  = q.value(2).toFloat();
+        out.append(rec);
+    }
+    return out;
+}
+
+QByteArray AudioDb::getRawBlock(qint64 blockIndex) const {
+    QSqlQuery q(m_db);
+    q.prepare("SELECT audio_data FROM audio_blocks WHERE block_index = ?");
+    q.addBindValue(blockIndex);
+    if (!q.exec() || !q.next()) return {};
+    return q.value(0).toByteArray();
+}
