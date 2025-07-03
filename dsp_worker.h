@@ -5,6 +5,13 @@
 #include <QVector>
 #include <QtTypes>
 
+struct FrameData {
+    qint64 timestamp;
+    qint64 sampleOffset;
+    QVector<float> waveform;
+    QVector<float> spectrum;
+};
+
 // Forward declaration
 class AudioDb;
 
@@ -17,6 +24,8 @@ struct DSPConfig {
     int sampleRate = 44100;     ///< Frecuencia de muestreo
     bool enableSpectrum = true; ///< Habilitar cálculo de espectro
     bool enablePeaks = true;    ///< Habilitar detección de picos
+
+    int waveformSize = 512;
 
     // Constructor por defecto
     DSPConfig() = default;
@@ -72,11 +81,7 @@ public slots:
     void reset();
 
 signals:
-    /** Emitido cuando se calculan los valores min/max de un bloque */
-    void minMaxReady(float min, float max, qint64 timestamp);
-
-    /** Emitido cuando está lista una columna del espectrograma */
-    void specColumnReady(const QVector<float>& magnitudes, qint64 timestamp);
+    void framesReady(const QVector<FrameData>& batch);
 
     /** Emitido al producirse un error */
     void errorOccurred(const QString& error);
@@ -90,15 +95,21 @@ private:
     QVector<float> calculateHanningWindow(int size) const;
     QVector<float> applyWindow(const QVector<float>& samples,
                                const QVector<float>& window) const;
+    FrameData processBlock(const QVector<float>& block, qint64 timestamp, qint64 sampleOffset);
+    QVector<float> calculateSpectrum(const QVector<float>& block);
+    void saveFrameToDb(const FrameData& frame, qint64 blockIndex);
 
     DSPConfig      m_cfg;             ///< Configuración DSP
     AudioDb*       m_db;              ///< Puntero a la base de datos
     QVector<float> m_accumBuffer;     ///< Buffer de acumulación
+    qint64 m_startTimestamp = -1;
     qint64         m_totalSamples = 0;///< Total de muestras procesadas
     qint64         m_blockIndex = 0;  ///< Índice de bloque
 
     QVector<float> m_hanningWindow;   ///< Ventana de Hanning
     bool           m_windowCalculated = false;
+
+
 };
 
 #endif // DSP_WORKER_H

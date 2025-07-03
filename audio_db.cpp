@@ -341,7 +341,7 @@ QList<PeakRecord> AudioDb::getPeaksByTime(qint64 tStart, qint64 tEnd) const
 
     QSqlQuery q(m_db);
     q.prepare(R"(
-        SELECT timestamp, min_value, max_value
+        SELECT block_index, sample_offset, timestamp, min_value, max_value
           FROM audio_peaks
          WHERE timestamp BETWEEN ? AND ?
          ORDER BY timestamp ASC
@@ -356,9 +356,11 @@ QList<PeakRecord> AudioDb::getPeaksByTime(qint64 tStart, qint64 tEnd) const
 
     while (q.next()) {
         PeakRecord rec;
-        rec.timestamp = q.value(0).toLongLong();
-        rec.minValue  = q.value(1).toFloat();
-        rec.maxValue  = q.value(2).toFloat();
+        rec.blockIndex   = q.value(0).toLongLong();
+        rec.sampleOffset = q.value(1).toLongLong();
+        rec.timestamp    = q.value(2).toLongLong();
+        rec.minValue     = q.value(3).toFloat();
+        rec.maxValue     = q.value(4).toFloat();
         out.append(rec);
     }
     return out;
@@ -370,4 +372,30 @@ QByteArray AudioDb::getRawBlock(qint64 blockIndex) const {
     q.addBindValue(blockIndex);
     if (!q.exec() || !q.next()) return {};
     return q.value(0).toByteArray();
+}
+
+
+QList<QByteArray> AudioDb::getBlocksByOffset(qint64 offsetStart, int nBlocks) const {
+    QList<QByteArray> blocks;
+    if (!m_initialized) return blocks;
+    QSqlQuery q(m_db);
+    q.prepare(R"(
+        SELECT audio_data
+          FROM audio_blocks
+         WHERE sample_offset >= ?
+         ORDER BY sample_offset ASC
+         LIMIT ?
+    )");
+    q.addBindValue(offsetStart);
+    q.addBindValue(nBlocks);
+
+    if (!q.exec()) {
+        qWarning() << "Error leyendo bloques por offset:" << q.lastError().text();
+        return blocks;
+    }
+
+    while (q.next()) {
+        blocks.append(q.value(0).toByteArray());
+    }
+    return blocks;
 }

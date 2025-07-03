@@ -25,7 +25,7 @@ MainWindow::MainWindow(AudioDb* db, QWidget* parent)
     vlay->addLayout(hlay);
     vlay->addWidget(status);
 
-    m_waveformWidget = new WaveformWidget(m_db, central);
+    //m_waveformWidget = new WaveformWidget(m_db, central);
     // Por ejemplo lo ponemos debajo del status:
     vlay->addWidget(m_waveformWidget);
 

@@ -21,8 +21,12 @@ SOURCES += \
     disk_buffer.cpp \
     dsp_worker.cpp \
     main.cpp \
+    main_moc.cpp \
     mainwindow.cpp \
     network_receiver.cpp \
+    realtime_spectrogram.cpp \
+    spectrogram_renderer.cpp \
+    waveform_render.cpp \
     waveform_widget.cpp
     #tests/audio_processor_test.cpp \
 
@@ -34,6 +38,9 @@ HEADERS += \
     ireceiver.h \
     mainwindow.h \
     network_receiver.h \
+    realtime_spectrogram.h \
+    spectrogram_renderer.h \
+    waveform_render.h \
     waveform_widget.h
 
 FORMS += \

@@ -1,4 +1,3 @@
-// AudioReceiver.cpp
 #include "audio_receiver.h"
 #include <QDebug>
 #include <cstring>

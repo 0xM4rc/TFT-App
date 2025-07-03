@@ -10,15 +10,13 @@
 #include <QList>
 #include <QtTypes>
 
-// audio_db.h (justo después de la clase AudioDb, o dentro en public:)
-
-struct PeakRecord {
-    qint64 timestamp;
-    float   minValue;
+ struct PeakRecord {
+   qint64 timestamp;
+   qint64 blockIndex;
+   qint64 sampleOffset;
+   float   minValue;
     float   maxValue;
-};
-Q_DECLARE_TYPEINFO(PeakRecord, Q_MOVABLE_TYPE);
-
+ };
 
 /**
  * @brief Clase para manejar el almacenamiento de audio en base de datos SQLite
@@ -102,6 +100,8 @@ public:
     QList<PeakRecord> getPeaksByTime(qint64 tStart, qint64 tEnd) const;
 
     QByteArray getRawBlock(qint64 blockIndex) const;
+
+    QList<QByteArray> getBlocksByOffset(qint64 offsetStart, int nBlocks) const;
 
 
 

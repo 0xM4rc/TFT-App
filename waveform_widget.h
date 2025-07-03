@@ -1,112 +1,96 @@
-// waveform_widget.h
 #ifndef WAVEFORM_WIDGET_H
 #define WAVEFORM_WIDGET_H
 
+#include "dsp_worker.h"
 #include <QWidget>
-#include <QPainter>
-#include <QPaintEvent>
-#include <QTimer>
 #include <QVector>
-#include <QPair>
+#include <QMutex>
 #include <QColor>
-#include <QBrush>
-#include <QPen>
 
-class AudioDb;
+class QPainter;
+class QPainterPath;
 
-struct WaveformConfig {
-    QColor backgroundColor = QColor(20, 20, 30);           // Fondo oscuro
-    QColor waveformColor = QColor(0, 150, 255);           // Azul para la onda
-    QColor centerLineColor = QColor(80, 80, 80);          // Línea central
-    QColor gridColor = QColor(40, 40, 50);                // Rejilla
-
-    int pixelsPerBlock = 2;        // Pixels por bloque de audio
-    int maxVisibleBlocks = 1000;   // Máximo de bloques visibles
-    bool showGrid = true;          // Mostrar rejilla
-    bool showCenterLine = true;    // Mostrar línea central
-    bool antiAliasing = true;      // Suavizado
-
-    float amplitudeScale = 1.0f;   // Escala de amplitud (zoom vertical)
-    int updateIntervalMs = 50;     // Intervalo de actualización en ms
-};
-
-class WaveformWidget : public QWidget
-{
+class WaveformWidget : public QWidget {
     Q_OBJECT
 
 public:
-    explicit WaveformWidget(AudioDb* db, QWidget* parent = nullptr);
-    ~WaveformWidget();
+    explicit WaveformWidget(QWidget* parent = nullptr);
 
-    // Configuración
-    void setConfig(const WaveformConfig& config);
-    WaveformConfig getConfig() const { return m_config; }
+    // Configuración de ventana temporal
+    void setSampleRate(int sampleRate) {
+        if (sampleRate > 0) {
+            m_sampleRate = sampleRate;
+            recalcBuffer();
+        }
+    }
 
-    // Control de visualización
-    void setAmplitudeScale(float scale);
-    void setPixelsPerBlock(int pixels);
-    void setMaxVisibleBlocks(int blocks);
+    void setTimeWindowSeconds(float seconds) {
+        if (seconds > 0.0f) {
+            m_timeWindowSeconds = seconds;
+            recalcBuffer();
+        }
+    }
 
-    // Control de datos
+    // Agregar datos de waveform
+    void appendFrames(const QVector<FrameData>& frames);
+
+    // Configuración de estilo
+    void setBackgroundColor(const QColor& color) { m_bgColor = color; update(); }
+    void setGridColor(const QColor& color) { m_gridColor = color; update(); }
+    void setWaveColor(const QColor& color) { m_waveColor = color; update(); }
+    void setShowGrid(bool show) { m_showGrid = show; update(); }
+
+    // Configuración del buffer
+    void setWaveformSize(int size);
+
+    // Método para limpiar completamente el waveform
     void clearWaveform();
-    void refreshFromDatabase();
-    void setAutoUpdate(bool enabled);
 
-    // Información
-    int getTotalBlocks() const { return m_peakData.size(); }
-    QString getStatusInfo() const;
-
-public slots:
-    void onNewPeakData(float minValue, float maxValue, qint64 timestamp);
-    void updateDisplay();
+    // Getters
+    int sampleRate() const { return m_sampleRate; }
+    float timeWindowSeconds() const { return m_timeWindowSeconds; }
+    int totalSamples() const { return m_totalSamples; }
 
 protected:
     void paintEvent(QPaintEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
-    void wheelEvent(QWheelEvent* event) override;
-    void mousePressEvent(QMouseEvent* event) override;
-    void mouseMoveEvent(QMouseEvent* event) override;
 
 private:
-    void setupTimer();
-    void loadPeaksFromDatabase();
-    void drawWaveform(QPainter& painter);
-    void drawGrid(QPainter& painter);
-    void drawCenterLine(QPainter& painter);
-    void calculateDisplayRange();
+    void recalcBuffer();
 
-    // Conversión de coordenadas
-    float sampleToY(float sample) const;
-    int blockToX(int blockIndex) const;
-    void onPollDatabase();
+    // Métodos de renderizado
+    void drawGrid(QPainter& painter, int width, int height, int midY);
+    void drawWaveform(QPainter& painter, const QVector<float>& buffer,
+                      int writeIndex, int totalSamples,
+                      int width, int height, int midY);
 
-private:
-    AudioDb* m_db;
-    WaveformConfig m_config;
+    // Métodos de renderizado mejorados con control de path
+    void drawWaveformDownsampled(QPainterPath& path, const QVector<float>& buffer,
+                                 int writeIndex, int totalSamples,
+                                 int width, int midY, int maxAmplitude,
+                                 float samplesPerPixel, bool& pathStarted);
 
-    // Datos de picos (min, max)
-    QVector<QPair<float, float>> m_peakData;
+    void drawWaveformUpsampled(QPainterPath& path, const QVector<float>& buffer,
+                               int writeIndex, int totalSamples,
+                               int width, int midY, int maxAmplitude,
+                               float samplesPerPixel, bool& pathStarted);
 
-    // Control de visualización
-    int m_displayStartBlock = 0;    // Primer bloque visible
-    int m_displayEndBlock = 0;      // Último bloque visible
-    int m_visibleBlocks = 0;        // Bloques que caben en pantalla
+    // Datos del buffer circular
+    QVector<float> m_buffer;
+    int m_writeIndex = 0;
+    int m_totalSamples = 0;
 
-    // Timer para actualizaciones
-    QTimer* m_updateTimer;
-    bool m_autoUpdate = true;
+    // Configuración temporal
+    float m_timeWindowSeconds = 5.0f;
+    int m_sampleRate = 44100;
 
-    // Cache para rendimiento
-    bool m_needsRecalculation = true;
-    int m_lastKnownBlocks = 0;
+    // Configuración visual
+    QColor m_bgColor = QColor(30, 30, 30);
+    QColor m_gridColor = QColor(60, 60, 80);
+    QColor m_waveColor = QColor(0, 200, 255);
+    bool m_showGrid = true;
 
-    // Interacción
-    bool m_dragging = false;
-    QPoint m_lastMousePos;
-    float m_horizontalOffset = 0.0f;
-
-    QTimer*   m_pollTimer    = nullptr;
-    int       m_lastKnownBlock = 0;
+    // Thread safety
+    mutable QMutex m_bufferMutex;
 };
 
 #endif // WAVEFORM_WIDGET_H
