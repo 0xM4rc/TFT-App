@@ -21,7 +21,6 @@ WaveformRenderer::WaveformRenderer(QWidget* parent)
     // Configurar el widget
     setMinimumSize(400, 100);
     setMouseTracking(true);
-
     setContentsMargins(0, 0, 0, 0);
 
     // Configurar el timer de actualización
@@ -29,13 +28,10 @@ WaveformRenderer::WaveformRenderer(QWidget* parent)
     connect(m_updateTimer, &QTimer::timeout, this, &WaveformRenderer::updateDisplay);
     m_updateTimer->start(m_config.updateInterval);
 
-    // Configurar colores por defecto
-    QPalette palette = this->palette();
-    palette.setColor(QPalette::Window, m_config.backgroundColor);
-    setPalette(palette);
-    setAutoFillBackground(true);
+    // Configurar colores y configuración inicial para waveform estilo Audacity
+    initializeForAudacityStyle();
 
-    qDebug() << "WaveformRenderer inicializado";
+    qDebug() << "WaveformRenderer inicializado con estilo Audacity";
 }
 
 WaveformRenderer::~WaveformRenderer()
@@ -59,6 +55,7 @@ void WaveformRenderer::setConfig(const WaveformConfig& config)
     QPalette palette = this->palette();
     palette.setColor(QPalette::Window, m_config.backgroundColor);
     setPalette(palette);
+    setAutoFillBackground(true);
 
     m_needsUpdate = true;
     update();
@@ -169,14 +166,17 @@ void WaveformRenderer::paintEvent(QPaintEvent* event)
     // Obtener el área de dibujo completa
     QRect drawRect = rect();
 
-    // Limpiar fondo
-    painter.fillRect(drawRect, m_config.backgroundColor);
+    // Limpiar fondo con gradiente sutil estilo Audacity
+    drawAudacityBackground(painter, drawRect);
 
     QMutexLocker locker(&m_mutex);
 
     if (m_blocks.isEmpty()) {
-        // Mostrar texto de estado centrado
-        painter.setPen(Qt::white);
+        // Mostrar texto de estado centrado con estilo Audacity
+        painter.setPen(QColor(180, 180, 180));
+        QFont font = painter.font();
+        font.setPointSize(10);
+        painter.setFont(font);
         painter.drawText(drawRect, Qt::AlignCenter, "Esperando datos de audio...");
         return;
     }
@@ -184,51 +184,21 @@ void WaveformRenderer::paintEvent(QPaintEvent* event)
     // Calcular dimensiones usando el área completa
     int height = drawRect.height();
     int width = drawRect.width();
-    int blockTotalWidth = m_config.blockWidth + m_config.blockSpacing;
 
     // Verificar que tenemos espacio suficiente
-    if (width <= 0 || height <= 0 || blockTotalWidth <= 0) {
+    if (width <= 0 || height <= 0) {
         return;
     }
 
-    // Calcular cuántos bloques caben en la pantalla
-    int maxVisibleBlocks = width / blockTotalWidth;
+    // Renderizar waveform estilo Audacity
+    drawAudacityWaveform(painter, height, width);
 
-    // Determinar rango de bloques a dibujar
-    int startIndex = m_config.scrolling ?
-                         std::max(0, static_cast<int>(m_blocks.size()) - maxVisibleBlocks) :
-                         m_visibleStartIndex;
-
-    int endIndex = std::min(static_cast<int>(m_blocks.size()),
-                            startIndex + maxVisibleBlocks);
-
-    // Dibujar línea central
-    painter.setPen(QPen(Qt::gray, 1, Qt::DashLine));
+    // Dibujar línea central más sutil
+    painter.setPen(QPen(QColor(100, 100, 100), 1));
     painter.drawLine(drawRect.left(), height / 2, drawRect.right(), height / 2);
 
-    // Dibujar bloques comenzando desde el margen izquierdo
-    int x = drawRect.left();  // Comenzar desde el borde izquierdo real
-    for (int i = startIndex; i < endIndex; ++i) {
-        if (i < m_blocks.size()) {
-            drawBlock(painter, m_blocks[i], x, height);
-        }
-        x += blockTotalWidth;
-
-        // Verificar si nos salimos del área visible
-        if (x > drawRect.right()) {
-            break;
-        }
-    }
-
-    // Dibujar información de estado en la parte superior
-    painter.setPen(Qt::white);
-    QRect textRect = QRect(drawRect.left() + 5, drawRect.top() + 5,
-                           drawRect.width() - 10, 20);
-    painter.drawText(textRect, Qt::AlignLeft | Qt::AlignTop,
-                     QString("Bloques: %1 | Zoom: %2x | Max: %3")
-                         .arg(m_blocks.size())
-                         .arg(m_zoom, 0, 'f', 1)
-                         .arg(m_maxAmplitude, 0, 'f', 3));
+    // Dibujar información de estado con estilo Audacity
+    drawStatusInfo(painter, drawRect);
 }
 
 void WaveformRenderer::resizeEvent(QResizeEvent* event)
@@ -260,6 +230,216 @@ void WaveformRenderer::wheelEvent(QWheelEvent* event)
     }
 
     event->accept();
+}
+
+void WaveformRenderer::initializeForAudacityStyle()
+{
+    // Configuración optimizada para estilo Audacity
+    m_config.maxVisibleBlocks = 2000;
+    m_config.blockWidth = 1;
+    m_config.blockSpacing = 0;
+
+    // Colores estilo Audacity
+    m_config.peakColor = QColor(100, 149, 237);      // Azul claro (CornflowerBlue)
+    m_config.rmsColor = QColor(70, 130, 180);        // Azul acero
+    m_config.backgroundColor = QColor(60, 60, 60);    // Gris oscuro
+    m_config.showPeaks = true;
+    m_config.showRMS = false;
+    m_config.autoScale = true;
+    m_config.manualScale = 1.0f;
+    m_config.scrolling = true;
+    m_config.updateInterval = 30;
+
+    // Actualizar colores del widget
+    QPalette palette = this->palette();
+    palette.setColor(QPalette::Window, m_config.backgroundColor);
+    setPalette(palette);
+    setAutoFillBackground(true);
+}
+
+void WaveformRenderer::drawAudacityBackground(QPainter& painter, const QRect& rect)
+{
+    // Fondo con gradiente sutil como Audacity
+    QLinearGradient gradient(0, 0, 0, rect.height());
+    gradient.setColorAt(0, QColor(65, 65, 65));
+    gradient.setColorAt(0.5, QColor(60, 60, 60));
+    gradient.setColorAt(1, QColor(55, 55, 55));
+
+    painter.fillRect(rect, gradient);
+
+    // Líneas de cuadrícula sutiles
+    painter.setPen(QPen(QColor(70, 70, 70), 1));
+
+    // Líneas horizontales cada 25% de altura
+    for (int i = 1; i < 4; i++) {
+        int y = rect.height() * i / 4;
+        painter.drawLine(rect.left(), y, rect.right(), y);
+    }
+}
+
+void WaveformRenderer::drawAudacityWaveform(QPainter& painter, int height, int width)
+{
+    if (m_blocks.isEmpty()) return;
+
+    // Configurar antialiasing para suavidad
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    // Calcular cuántos bloques por pixel
+    float blocksPerPixel = static_cast<float>(m_blocks.size()) / width;
+
+    if (blocksPerPixel < 1.0f) {
+        // Menos bloques que pixels - usar interpolación suave
+        drawAudacityInterpolatedWaveform(painter, height, width);
+    } else {
+        // Más bloques que pixels - usar densidad con gradiente
+        drawAudacityDensityWaveform(painter, height, width, blocksPerPixel);
+    }
+}
+
+void WaveformRenderer::drawAudacityInterpolatedWaveform(QPainter& painter, int height, int width)
+{
+    int centerY = height / 2;
+
+    // Crear gradiente para efecto de profundidad
+    QLinearGradient waveGradient(0, 0, 0, height);
+    waveGradient.setColorAt(0, QColor(120, 169, 255, 200));  // Azul claro en los bordes
+    waveGradient.setColorAt(0.5, QColor(100, 149, 237, 255)); // Azul intenso en el centro
+    waveGradient.setColorAt(1, QColor(120, 169, 255, 200));  // Azul claro en los bordes
+
+    QBrush waveBrush(waveGradient);
+    painter.setBrush(waveBrush);
+
+    // Dibujar como polígono relleno para efecto más suave
+    QPolygonF upperWave, lowerWave;
+
+    for (int i = 0; i < m_blocks.size(); i++) {
+        float pixelPos = (static_cast<float>(i) / m_blocks.size()) * width;
+        int x = static_cast<int>(pixelPos);
+
+        if (x >= width) break;
+
+        const WaveformBlock& block = m_blocks[i];
+
+        // Calcular posiciones Y con suavizado
+        int minY = centerY - scaleValue(block.minValue, height);
+        int maxY = centerY - scaleValue(block.maxValue, height);
+
+        // Limitar a los bordes
+        minY = std::max(0, std::min(height - 1, minY));
+        maxY = std::max(0, std::min(height - 1, maxY));
+
+        upperWave << QPointF(x, maxY);
+        lowerWave.prepend(QPointF(x, minY));
+    }
+
+    // Combinar ambas partes del polígono
+    QPolygonF completeWave = upperWave + lowerWave;
+
+    // Dibujar el polígono relleno
+    painter.setPen(QPen(QColor(80, 129, 217), 1));
+    painter.drawPolygon(completeWave);
+
+    // Dibujar contorno más definido
+    painter.setPen(QPen(QColor(100, 149, 237), 2));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPolyline(upperWave);
+    painter.drawPolyline(lowerWave);
+}
+
+void WaveformRenderer::drawAudacityDensityWaveform(QPainter& painter, int height, int width, float blocksPerPixel)
+{
+    int centerY = height / 2;
+
+    // Crear gradiente vertical para cada línea
+    QLinearGradient lineGradient(0, 0, 0, height);
+    lineGradient.setColorAt(0, QColor(120, 169, 255, 180));
+    lineGradient.setColorAt(0.5, QColor(100, 149, 237, 255));
+    lineGradient.setColorAt(1, QColor(120, 169, 255, 180));
+
+    QPen wavePen;
+    wavePen.setBrush(QBrush(lineGradient));
+    wavePen.setWidth(1);
+    wavePen.setCapStyle(Qt::RoundCap);
+    painter.setPen(wavePen);
+
+    for (int pixel = 0; pixel < width; pixel++) {
+        int startBlock = static_cast<int>(pixel * blocksPerPixel);
+        int endBlock = static_cast<int>((pixel + 1) * blocksPerPixel);
+
+        if (startBlock >= m_blocks.size()) break;
+        endBlock = std::min(endBlock, static_cast<int>(m_blocks.size()));
+
+        // Encontrar min/max en este rango de bloques
+        float minVal = m_blocks[startBlock].minValue;
+        float maxVal = m_blocks[startBlock].maxValue;
+        float avgVal = 0.0f;
+        int count = 0;
+
+        for (int b = startBlock; b < endBlock; b++) {
+            minVal = std::min(minVal, m_blocks[b].minValue);
+            maxVal = std::max(maxVal, m_blocks[b].maxValue);
+            avgVal += (m_blocks[b].minValue + m_blocks[b].maxValue) / 2.0f;
+            count++;
+        }
+
+        if (count > 0) {
+            avgVal /= count;
+        }
+
+        // Dibujar línea vertical con intensidad basada en densidad
+        int minY = centerY - scaleValue(minVal, height);
+        int maxY = centerY - scaleValue(maxVal, height);
+
+        minY = std::max(0, std::min(height - 1, minY));
+        maxY = std::max(0, std::min(height - 1, maxY));
+
+        // Ajustar opacidad según la densidad
+        float density = std::min(1.0f, blocksPerPixel / 10.0f);
+        QColor lineColor = QColor(100, 149, 237);
+        lineColor.setAlphaF(0.7f + density * 0.3f);
+
+        painter.setPen(QPen(lineColor, 1));
+        painter.drawLine(pixel, minY, pixel, maxY);
+    }
+}
+
+void WaveformRenderer::drawStatusInfo(QPainter& painter, const QRect& rect)
+{
+    // Fondo semitransparente para el texto
+    QRect statusRect(rect.left() + 5, rect.top() + 5, 250, 20);
+    painter.fillRect(statusRect, QColor(0, 0, 0, 100));
+
+    // Texto con estilo Audacity
+    painter.setPen(QColor(200, 200, 200));
+    QFont font = painter.font();
+    font.setPointSize(9);
+    font.setFamily("Arial");
+    painter.setFont(font);
+
+    QString statusText = QString("Bloques: %1 | Zoom: %2x | Amplitud: %3")
+                             .arg(m_blocks.size())
+                             .arg(m_zoom, 0, 'f', 1)
+                             .arg(m_maxAmplitude, 0, 'f', 3);
+
+    painter.drawText(statusRect, Qt::AlignLeft | Qt::AlignVCenter, statusText);
+}
+
+void WaveformRenderer::drawPixelDensityWaveform(QPainter& painter, int height, int width)
+{
+    // Redirigir al método específico de Audacity
+    drawAudacityWaveform(painter, height, width);
+}
+
+void WaveformRenderer::drawInterpolatedWaveform(QPainter& painter, int height, int width)
+{
+    // Redirigir al método específico de Audacity
+    drawAudacityInterpolatedWaveform(painter, height, width);
+}
+
+void WaveformRenderer::drawDensityWaveform(QPainter& painter, int height, int width, float blocksPerPixel)
+{
+    // Redirigir al método específico de Audacity
+    drawAudacityDensityWaveform(painter, height, width, blocksPerPixel);
 }
 
 void WaveformRenderer::addBlock(const WaveformBlock& block)
@@ -301,64 +481,10 @@ void WaveformRenderer::calculateBlockStats(WaveformBlock& block)
     block.rmsValue = std::sqrt(sum / block.samples.size());
 }
 
-void WaveformRenderer::drawBlock(QPainter& painter, const WaveformBlock& block, int x, int height)
-{
-    if (m_config.showPeaks) {
-        drawPeaks(painter, block, x, height);
-    }
-
-    if (m_config.showRMS) {
-        drawRMS(painter, block, x, height);
-    }
-}
-
-void WaveformRenderer::drawPeaks(QPainter& painter, const WaveformBlock& block, int x, int height)
-{
-    painter.setPen(QPen(m_config.peakColor, 1));
-    painter.setBrush(QBrush(m_config.peakColor));
-
-    int centerY = height / 2;
-
-    // Calcular posiciones Y usando todo el espacio
-    int minY = centerY - scaleValue(block.minValue, height);
-    int maxY = centerY - scaleValue(block.maxValue, height);
-
-    // Limitar a los bordes del widget
-    minY = std::max(0, std::min(height - 1, minY));
-    maxY = std::max(0, std::min(height - 1, maxY));
-
-    // Dibujar línea de pico a pico
-    painter.drawLine(x + m_config.blockWidth / 2, minY,
-                     x + m_config.blockWidth / 2, maxY);
-
-    // Dibujar rectángulo representativo
-    if (std::abs(maxY - minY) > 1) {
-        painter.drawRect(x, std::min(minY, maxY),
-                         m_config.blockWidth, std::abs(maxY - minY));
-    }
-}
-
-void WaveformRenderer::drawRMS(QPainter& painter, const WaveformBlock& block, int x, int height)
-{
-    painter.setPen(QPen(m_config.rmsColor, 2));
-
-    int centerY = height / 2;
-    int rmsHeight = scaleValue(block.rmsValue, height);
-
-    // Calcular posiciones Y y limitar a los bordes
-    int rmsTop = std::max(0, centerY - rmsHeight);
-    int rmsBottom = std::min(height - 1, centerY + rmsHeight);
-
-    // Dibujar líneas RMS positiva y negativa
-    painter.drawLine(x, rmsTop, x + m_config.blockWidth, rmsTop);
-    painter.drawLine(x, rmsBottom, x + m_config.blockWidth, rmsBottom);
-}
-
 void WaveformRenderer::updateVisibleRange()
 {
     int width = rect().width();
-    int blockTotalWidth = m_config.blockWidth + m_config.blockSpacing;
-    int maxVisibleBlocks = width / blockTotalWidth;
+    int maxVisibleBlocks = width; // Un bloque por pixel en modo continuo
 
     if (m_config.scrolling) {
         // Modo scrolling: mostrar los últimos bloques
@@ -367,9 +493,8 @@ void WaveformRenderer::updateVisibleRange()
     } else {
         // Modo fijo: usar offset manual
         m_visibleStartIndex = std::max(0, m_scrollOffset);
-        m_visibleEndIndex = qMin(m_blocks.size(),
-                                 static_cast<qsizetype>(m_visibleStartIndex + maxVisibleBlocks));
-
+        m_visibleEndIndex = std::min(m_blocks.size(),
+                                     static_cast<qsizetype>(m_visibleStartIndex + maxVisibleBlocks));
     }
 }
 
@@ -379,18 +504,18 @@ float WaveformRenderer::scaleValue(float value, int height) const
                       (1.0f / (m_maxAmplitude * m_zoom)) :
                       m_config.manualScale * m_zoom;
 
-    // Usar todo el espacio disponible (sin el margen 0.8f)
-    return value * scale * (height / 2.0f);
+    // Usar todo el espacio disponible con un poco de margen
+    return value * scale * (height / 2.2f);
 }
 
 int WaveformRenderer::getBlockAtPosition(int x) const
 {
-    int blockTotalWidth = m_config.blockWidth + m_config.blockSpacing;
-    int blockIndex = x / blockTotalWidth;
+    // En modo continuo, la posición X se mapea directamente a los bloques
+    float blocksPerPixel = static_cast<float>(m_blocks.size()) / rect().width();
+    int blockIndex = static_cast<int>(x * blocksPerPixel);
 
     if (m_config.scrolling) {
-        int width = rect().width();
-        int maxVisibleBlocks = width / blockTotalWidth;
+        int maxVisibleBlocks = rect().width();
         int startIndex = std::max(0, static_cast<int>(m_blocks.size()) - maxVisibleBlocks);
         return startIndex + blockIndex;
     } else {

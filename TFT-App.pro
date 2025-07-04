@@ -18,7 +18,6 @@ PKGCONFIG += gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0
 SOURCES += \
     audio_db.cpp \
     audio_receiver.cpp \
-    disk_buffer.cpp \
     dsp_worker.cpp \
     main.cpp \
     main_moc.cpp \
@@ -33,7 +32,6 @@ SOURCES += \
 HEADERS += \
     audio_db.h \
     audio_receiver.h \
-    disk_buffer.h \
     dsp_worker.h \
     ireceiver.h \
     mainwindow.h \

@@ -30,22 +30,22 @@ struct WaveformBlock {
  * @brief Configuración para el renderizado del waveform
  */
 struct WaveformConfig {
-    int maxVisibleBlocks = 100;     ///< Máximo de bloques visibles
-    int blockWidth = 4;             ///< Ancho de cada bloque en pixels
-    int blockSpacing = 1;           ///< Espaciado entre bloques
-    QColor peakColor = Qt::green;   ///< Color de los picos
-    QColor rmsColor = Qt::blue;     ///< Color del RMS
-    QColor backgroundColor = Qt::black; ///< Color de fondo
+    int maxVisibleBlocks = 2000;    ///< Máximo de bloques visibles
+    int blockWidth = 1;             ///< Ancho de cada bloque en pixels
+    int blockSpacing = 0;           ///< Espaciado entre bloques
+    QColor peakColor = QColor(100, 149, 237);   ///< Color de los picos (azul Audacity)
+    QColor rmsColor = QColor(70, 130, 180);     ///< Color del RMS (azul acero)
+    QColor backgroundColor = QColor(60, 60, 60); ///< Color de fondo (gris oscuro)
     bool showPeaks = true;          ///< Mostrar picos
-    bool showRMS = true;            ///< Mostrar RMS
+    bool showRMS = false;           ///< Mostrar RMS
     bool autoScale = true;          ///< Escalado automático
     float manualScale = 1.0f;       ///< Escala manual cuando autoScale = false
     bool scrolling = true;          ///< Desplazamiento automático
-    int updateInterval = 50;        ///< Intervalo de actualización en ms
+    int updateInterval = 30;        ///< Intervalo de actualización en ms
 };
 
 /**
- * @brief Widget para renderizar waveform por bloques
+ * @brief Widget para renderizar waveform continuo estilo Audacity
  */
 class WaveformRenderer : public QWidget
 {
@@ -94,15 +94,31 @@ private slots:
     void updateDisplay();
 
 private:
+    // Métodos de configuración
+    void initializeForAudacityStyle();
+
+    // Métodos de renderizado básicos
+    void drawPixelDensityWaveform(QPainter& painter, int height, int width);
+    void drawInterpolatedWaveform(QPainter& painter, int height, int width);
+    void drawDensityWaveform(QPainter& painter, int height, int width, float blocksPerPixel);
+
+    // Métodos específicos para estilo Audacity
+    void drawAudacityBackground(QPainter& painter, const QRect& rect);
+    void drawAudacityWaveform(QPainter& painter, int height, int width);
+    void drawAudacityInterpolatedWaveform(QPainter& painter, int height, int width);
+    void drawAudacityDensityWaveform(QPainter& painter, int height, int width, float blocksPerPixel);
+    void drawStatusInfo(QPainter& painter, const QRect& rect);
+
+    // Métodos de manejo de bloques
     void addBlock(const WaveformBlock& block);
     void calculateBlockStats(WaveformBlock& block);
-    void drawBlock(QPainter& painter, const WaveformBlock& block, int x, int height);
-    void drawPeaks(QPainter& painter, const WaveformBlock& block, int x, int height);
-    void drawRMS(QPainter& painter, const WaveformBlock& block, int x, int height);
+
+    // Métodos de utilidad
     void updateVisibleRange();
     float scaleValue(float value, int height) const;
     int getBlockAtPosition(int x) const;
 
+    // Configuración y datos
     WaveformConfig m_config;
     QVector<WaveformBlock> m_blocks;
     mutable QMutex m_mutex;
