@@ -1,135 +1,113 @@
 #include <QApplication>
-#include <QVBoxLayout>
-#include <QDateTime>
+#include <QStyleFactory>
 #include <QDir>
-#include <QFileInfo>
-#include <QWidget>
+#include <QStandardPaths>
+#include <QMessageBox>
+#include <QSplashScreen>
+#include <QPixmap>
+#include <QTimer>
 #include <QDebug>
-
-#include "audio_db.h"
-#include "dsp_worker.h"
-#include "network_receiver.h"
-
-// 1) Incluir ahora el renderer de waveform y el de espectrograma
-#include "waveform_render.h"
-#include "spectrogram_renderer.h"
+#include "mainwindow.h"
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
 
-    /////////////////////////////
-    // 1) PREPARAR BASE DE DATOS
-    /////////////////////////////
-    QString dbPath = "/home/m4rc/Desktop/tft-app/TFT-App/audio_capture.db";
-    QDir dir(QFileInfo(dbPath).absolutePath());
-    if (!dir.exists()) dir.mkpath(".");
+    // Configurar información de la aplicación
+    app.setApplicationName("Audio Analyzer");
+    app.setApplicationVersion("1.0");
+    app.setOrganizationName("AudioAnalyzer");
+    app.setOrganizationDomain("audioanalyzer.local");
 
-    AudioDb audioDb(dbPath, &app);
-    if (!audioDb.initialize()) {
-        qCritical() << "Error inicializando la base de datos";
-        return -1;
+    // Configurar estilo de la aplicación
+    app.setStyle(QStyleFactory::create("Fusion"));
+
+    // Configurar paleta oscura opcional
+    QPalette darkPalette;
+    darkPalette.setColor(QPalette::Window, QColor(53, 53, 53));
+    darkPalette.setColor(QPalette::WindowText, Qt::white);
+    darkPalette.setColor(QPalette::Base, QColor(25, 25, 25));
+    darkPalette.setColor(QPalette::AlternateBase, QColor(53, 53, 53));
+    darkPalette.setColor(QPalette::ToolTipBase, Qt::white);
+    darkPalette.setColor(QPalette::ToolTipText, Qt::white);
+    darkPalette.setColor(QPalette::Text, Qt::white);
+    darkPalette.setColor(QPalette::Button, QColor(53, 53, 53));
+    darkPalette.setColor(QPalette::ButtonText, Qt::white);
+    darkPalette.setColor(QPalette::BrightText, Qt::red);
+    darkPalette.setColor(QPalette::Link, QColor(42, 130, 218));
+    darkPalette.setColor(QPalette::Highlight, QColor(42, 130, 218));
+    darkPalette.setColor(QPalette::HighlightedText, Qt::black);
+
+    // Aplicar tema oscuro (opcional)
+    // app.setPalette(darkPalette);
+
+    // Crear directorio de configuración si no existe
+    QString configDir = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
+    QDir().mkpath(configDir + "/AudioAnalyzer");
+
+    // Mostrar splash screen (opcional)
+    QSplashScreen* splash = nullptr;
+    /*
+    QPixmap pixmap(400, 300);
+    pixmap.fill(Qt::black);
+    splash = new QSplashScreen(pixmap);
+    splash->show();
+    splash->showMessage("Loading Audio Analyzer...", Qt::AlignHCenter | Qt::AlignBottom, Qt::white);
+    app.processEvents();
+    */
+
+    // Crear ventana principal
+    MainWindow window;
+
+    // Simular tiempo de carga
+    if (splash) {
+        QTimer::singleShot(2000, [&]() {
+            splash->finish(&window);
+            window.show();
+        });
+    } else {
+        window.show();
     }
-    audioDb.clearDatabase();
 
-    /////////////////////////////
-    // 2) CONFIGURAR DSPWorker
-    /////////////////////////////
-    DSPConfig dspConfig;
-    dspConfig.blockSize      = 4096;
-    dspConfig.fftSize        = 1024;    // tamaño de FFT para espectro
-    dspConfig.sampleRate     = 44100;
-    dspConfig.enableSpectrum = true;    // activamos espectro
-    dspConfig.enablePeaks    = true;
+    // Manejar errores no capturados
+    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &context, const QString &msg) {
+        QString typeStr;
+        switch (type) {
+        case QtDebugMsg:    typeStr = "Debug"; break;
+        case QtWarningMsg:  typeStr = "Warning"; break;
+        case QtCriticalMsg: typeStr = "Critical"; break;
+        case QtFatalMsg:    typeStr = "Fatal"; break;
+        case QtInfoMsg:     typeStr = "Info"; break;
+        }
 
-    DSPWorker dspWorker(dspConfig, &audioDb, &app);
+        QString formatted = QString("[%1] %2:%3 - %4")
+                                .arg(typeStr)
+                                .arg(context.file ? QFileInfo(context.file).baseName() : "Unknown")
+                                .arg(context.line)
+                                .arg(msg);
 
-    /////////////////////////////
-    // 3) CREAR UI
-    /////////////////////////////
-    QWidget window;
-    window.setWindowTitle("Live Waveform + Spectrogram");
-    window.resize(800, 600);
+        // Escribir a consola
+        fprintf(stderr, "%s\n", formatted.toLocal8Bit().constData());
 
-    QVBoxLayout* layout = new QVBoxLayout(&window);
+        // En caso de error fatal, mostrar mensaje
+        if (type == QtFatalMsg) {
+            QMessageBox::critical(nullptr, "Fatal Error", msg);
+        }
+    });
 
-    // 3a) WaveformRenderer
-    WaveformRenderer* wfRenderer = new WaveformRenderer;
-    WaveformConfig wfCfg;
-    wfCfg.blockWidth       = 4;
-    wfCfg.blockSpacing     = 1;
-    wfCfg.showPeaks        = true;
-    wfCfg.showRMS          = false;
-    wfCfg.autoScale        = true;
-    wfCfg.scrolling        = true;
-    wfCfg.backgroundColor  = Qt::black;
-    wfCfg.peakColor        = Qt::green;
-    wfCfg.rmsColor         = Qt::yellow;
-    wfCfg.updateInterval   = 30;
-    wfCfg.maxVisibleBlocks = 0;
-    wfRenderer->setConfig(wfCfg);
+    qDebug() << "Audio Analyzer started";
+    qDebug() << "Qt version:" << QT_VERSION_STR;
+    qDebug() << "Application directory:" << app.applicationDirPath();
+    qDebug() << "Config directory:" << configDir;
 
-    layout->addWidget(wfRenderer, /* stretch=*/1);
+    int result = app.exec();
 
-    // 3b) SpectrogramRenderer
-    SpectrogramRenderer* specRenderer = new SpectrogramRenderer;
-    SpectrogramConfig specCfg;
-    specCfg.fftSize        = dspConfig.fftSize;
-    specCfg.sampleRate     = dspConfig.sampleRate;
-    specCfg.blockWidth     = 2;        // ancho más estrecho
-    specCfg.updateInterval = 30;
-    specCfg.maxColumns     = 400;      // tiempo visible
-    specCfg.autoScroll     = true;
-    specCfg.minDb          = -100.0f;
-    specCfg.maxDb          =   0.0f;
-    specRenderer->setConfig(specCfg);
+    // Limpiar splash screen si existe
+    if (splash) {
+        delete splash;
+    }
 
-    layout->addWidget(specRenderer, /* stretch=*/1);
+    qDebug() << "Audio Analyzer finished with code:" << result;
 
-    window.show();
-
-    /////////////////////////////
-    // 4) CONFIGURAR RECEPCIÓN RED
-    /////////////////////////////
-    NetworkReceiver networkReceiver(&app);
-    networkReceiver.setUrl("http://stream.radioparadise.com/rock-128");
-
-    QObject::connect(&networkReceiver, &NetworkReceiver::floatChunkReady,
-                     &dspWorker, &DSPWorker::processChunk);
-    QObject::connect(&networkReceiver, &NetworkReceiver::errorOccurred,
-                     [&](const QString& err){
-                         qCritical() << "Red:" << err;
-                         app.quit();
-                     });
-
-    /////////////////////////////
-    // 5) SEÑALES DEL DSP
-    /////////////////////////////
-    // 5a) conectar framesReady a ambos renderers
-    QObject::connect(&dspWorker, &DSPWorker::framesReady,
-                     wfRenderer, &WaveformRenderer::processFrames);
-    QObject::connect(&dspWorker, &DSPWorker::framesReady,
-                     specRenderer, &SpectrogramRenderer::processFrames);
-
-    QObject::connect(&dspWorker, &DSPWorker::errorOccurred,
-                     [&](const QString& err){
-                         qCritical() << "DSP:" << err;
-                         app.quit();
-                     });
-
-    QObject::connect(&dspWorker, &DSPWorker::statsUpdated,
-                     [&](qint64 blocks, qint64 samples, int buf){
-                         if (blocks % 50 == 0) {
-                             qDebug() << "Progreso:" << blocks
-                                      << "bloques," << samples
-                                      << "muestras en buffer:" << buf;
-                         }
-                     });
-
-    /////////////////////////////
-    // 6) INICIAR STREAMING
-    /////////////////////////////
-    networkReceiver.start();
-
-    return app.exec();
+    return result;
 }

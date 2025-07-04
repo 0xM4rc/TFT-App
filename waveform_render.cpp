@@ -22,6 +22,8 @@ WaveformRenderer::WaveformRenderer(QWidget* parent)
     setMinimumSize(400, 100);
     setMouseTracking(true);
 
+    setContentsMargins(0, 0, 0, 0);
+
     // Configurar el timer de actualización
     m_updateTimer = new QTimer(this);
     connect(m_updateTimer, &QTimer::timeout, this, &WaveformRenderer::updateDisplay);
@@ -161,27 +163,33 @@ void WaveformRenderer::updateDisplay()
 
 void WaveformRenderer::paintEvent(QPaintEvent* event)
 {
-    Q_UNUSED(event)
-
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
+    // Obtener el área de dibujo completa
+    QRect drawRect = rect();
+
     // Limpiar fondo
-    painter.fillRect(rect(), m_config.backgroundColor);
+    painter.fillRect(drawRect, m_config.backgroundColor);
 
     QMutexLocker locker(&m_mutex);
 
     if (m_blocks.isEmpty()) {
-        // Mostrar texto de estado
+        // Mostrar texto de estado centrado
         painter.setPen(Qt::white);
-        painter.drawText(rect(), Qt::AlignCenter, "Esperando datos de audio...");
+        painter.drawText(drawRect, Qt::AlignCenter, "Esperando datos de audio...");
         return;
     }
 
-    // Calcular dimensiones
-    int height = rect().height();
-    int width = rect().width();
+    // Calcular dimensiones usando el área completa
+    int height = drawRect.height();
+    int width = drawRect.width();
     int blockTotalWidth = m_config.blockWidth + m_config.blockSpacing;
+
+    // Verificar que tenemos espacio suficiente
+    if (width <= 0 || height <= 0 || blockTotalWidth <= 0) {
+        return;
+    }
 
     // Calcular cuántos bloques caben en la pantalla
     int maxVisibleBlocks = width / blockTotalWidth;
@@ -196,22 +204,31 @@ void WaveformRenderer::paintEvent(QPaintEvent* event)
 
     // Dibujar línea central
     painter.setPen(QPen(Qt::gray, 1, Qt::DashLine));
-    painter.drawLine(0, height / 2, width, height / 2);
+    painter.drawLine(drawRect.left(), height / 2, drawRect.right(), height / 2);
 
-    // Dibujar bloques
-    int x = 0;
+    // Dibujar bloques comenzando desde el margen izquierdo
+    int x = drawRect.left();  // Comenzar desde el borde izquierdo real
     for (int i = startIndex; i < endIndex; ++i) {
         if (i < m_blocks.size()) {
             drawBlock(painter, m_blocks[i], x, height);
         }
         x += blockTotalWidth;
+
+        // Verificar si nos salimos del área visible
+        if (x > drawRect.right()) {
+            break;
+        }
     }
 
-    // Dibujar información de estado
+    // Dibujar información de estado en la parte superior
     painter.setPen(Qt::white);
-    painter.drawText(5, 15, QString("Bloques: %1 | Zoom: %2x")
-                                .arg(m_blocks.size())
-                                .arg(m_zoom, 0, 'f', 1));
+    QRect textRect = QRect(drawRect.left() + 5, drawRect.top() + 5,
+                           drawRect.width() - 10, 20);
+    painter.drawText(textRect, Qt::AlignLeft | Qt::AlignTop,
+                     QString("Bloques: %1 | Zoom: %2x | Max: %3")
+                         .arg(m_blocks.size())
+                         .arg(m_zoom, 0, 'f', 1)
+                         .arg(m_maxAmplitude, 0, 'f', 3));
 }
 
 void WaveformRenderer::resizeEvent(QResizeEvent* event)
@@ -301,8 +318,14 @@ void WaveformRenderer::drawPeaks(QPainter& painter, const WaveformBlock& block, 
     painter.setBrush(QBrush(m_config.peakColor));
 
     int centerY = height / 2;
+
+    // Calcular posiciones Y usando todo el espacio
     int minY = centerY - scaleValue(block.minValue, height);
     int maxY = centerY - scaleValue(block.maxValue, height);
+
+    // Limitar a los bordes del widget
+    minY = std::max(0, std::min(height - 1, minY));
+    maxY = std::max(0, std::min(height - 1, maxY));
 
     // Dibujar línea de pico a pico
     painter.drawLine(x + m_config.blockWidth / 2, minY,
@@ -322,9 +345,13 @@ void WaveformRenderer::drawRMS(QPainter& painter, const WaveformBlock& block, in
     int centerY = height / 2;
     int rmsHeight = scaleValue(block.rmsValue, height);
 
+    // Calcular posiciones Y y limitar a los bordes
+    int rmsTop = std::max(0, centerY - rmsHeight);
+    int rmsBottom = std::min(height - 1, centerY + rmsHeight);
+
     // Dibujar líneas RMS positiva y negativa
-    painter.drawLine(x, centerY - rmsHeight, x + m_config.blockWidth, centerY - rmsHeight);
-    painter.drawLine(x, centerY + rmsHeight, x + m_config.blockWidth, centerY + rmsHeight);
+    painter.drawLine(x, rmsTop, x + m_config.blockWidth, rmsTop);
+    painter.drawLine(x, rmsBottom, x + m_config.blockWidth, rmsBottom);
 }
 
 void WaveformRenderer::updateVisibleRange()
@@ -352,7 +379,8 @@ float WaveformRenderer::scaleValue(float value, int height) const
                       (1.0f / (m_maxAmplitude * m_zoom)) :
                       m_config.manualScale * m_zoom;
 
-    return value * scale * (height / 2.0f) * 0.8f; // 0.8f para margen
+    // Usar todo el espacio disponible (sin el margen 0.8f)
+    return value * scale * (height / 2.0f);
 }
 
 int WaveformRenderer::getBlockAtPosition(int x) const

@@ -1,10 +1,10 @@
 #include "dsp_worker.h"
+#include "spectrogram_calculator.h"
 #include "audio_db.h"
 #include <QDateTime>
 #include <QDebug>
 #include <algorithm>
 #include <complex>
-#include <fftw3.h>
 #include <cmath>
 
 DSPWorker::DSPWorker(const DSPConfig& cfg, AudioDb* db, QObject* parent)
@@ -32,20 +32,56 @@ DSPWorker::DSPWorker(const DSPConfig& cfg, AudioDb* db, QObject* parent)
         m_cfg.sampleRate = 44100;
     }
 
+    if (m_cfg.hopSize <= 0) {
+        qWarning() << "DSPWorker: hopSize inválido, usando fftSize/2";
+        m_cfg.hopSize = m_cfg.fftSize / 2;
+    }
+
+    // Inicializar calculador de espectrograma
+    initializeSpectrogramCalculator();
+
     qDebug() << "DSPWorker inicializado:"
              << "blockSize=" << m_cfg.blockSize
              << "fftSize=" << m_cfg.fftSize
-             << "sampleRate=" << m_cfg.sampleRate;
+             << "hopSize=" << m_cfg.hopSize
+             << "sampleRate=" << m_cfg.sampleRate
+             << "windowType=" << m_cfg.windowType;
 }
 
 DSPWorker::~DSPWorker() {
-    // Limpiar recursos si es necesario
+    // Limpiar recursos
     m_accumBuffer.clear();
     m_hanningWindow.clear();
+    m_spectrogramCalc.reset();
 }
 
 DSPConfig DSPWorker::getConfig() const {
     return m_cfg;
+}
+
+void DSPWorker::setConfig(const DSPConfig& cfg) {
+    bool needsSpectrogramUpdate = (
+        cfg.fftSize != m_cfg.fftSize ||
+        cfg.hopSize != m_cfg.hopSize ||
+        cfg.sampleRate != m_cfg.sampleRate ||
+        cfg.windowType != m_cfg.windowType ||
+        cfg.kaiserBeta != m_cfg.kaiserBeta ||
+        cfg.gaussianSigma != m_cfg.gaussianSigma ||
+        cfg.logScale != m_cfg.logScale ||
+        cfg.noiseFloor != m_cfg.noiseFloor
+        );
+
+    m_cfg = cfg;
+
+    if (needsSpectrogramUpdate) {
+        updateSpectrogramConfig();
+    }
+
+    // Limpiar ventana legacy si cambia el tamaño
+    if (cfg.fftSize != m_cfg.fftSize) {
+        m_windowCalculated = false;
+        m_hanningWindow.clear();
+    }
 }
 
 qint64 DSPWorker::getTotalSamples() const {
@@ -60,12 +96,43 @@ int DSPWorker::getAccumBufferSize() const {
     return m_accumBuffer.size();
 }
 
-void DSPWorker::processChunk(const QVector<float>& samples, qint64 timestamp)
-{
+QVector<float> DSPWorker::getFrequencyBins() const {
+    if (m_spectrogramCalc) {
+        return m_spectrogramCalc->getFrequencyBins();
+    }
+
+    // Fallback: calcular frecuencias manualmente
+    int bins = m_cfg.fftSize / 2 + 1;
+    QVector<float> freqs(bins);
+    float freqStep = static_cast<float>(m_cfg.sampleRate) / m_cfg.fftSize;
+
+    for (int i = 0; i < bins; ++i) {
+        freqs[i] = i * freqStep;
+    }
+
+    return freqs;
+}
+
+QString DSPWorker::getStatusInfo() const {
+    return QString("DSPWorker: %1 bloques, %2 muestras, buffer: %3")
+    .arg(m_blockIndex)
+        .arg(m_totalSamples)
+        .arg(m_accumBuffer.size());
+}
+
+QString DSPWorker::getSpectrogramInfo() const {
+    if (m_spectrogramCalc) {
+        return m_spectrogramCalc->getWindowInfo();
+    }
+    return "SpectrogramCalculator no disponible";
+}
+
+void DSPWorker::processChunk(const QVector<float>& samples, qint64 timestamp) {
     if (samples.isEmpty()) {
         emit errorOccurred("Chunk de muestras vacío");
         return;
     }
+
     if (m_cfg.blockSize <= 0 || m_cfg.sampleRate <= 0) {
         emit errorOccurred("Configuración inválida (blockSize o sampleRate ≤ 0)");
         return;
@@ -100,10 +167,8 @@ void DSPWorker::processChunk(const QVector<float>& samples, qint64 timestamp)
             FrameData frame = processBlock(block, blockTs, m_totalSamples);
             batch.append(frame);
 
-            // Guardamos solo los picos en DB (el bloque raw ya se guardó en processBlock)
-            if (m_db && m_cfg.enablePeaks && frame.waveform.size() >= 2) {
-                m_db->insertPeak(m_blockIndex, frame.sampleOffset, frame.waveform[0], frame.waveform[1]);
-            }
+            // Guardamos en la base de datos
+            saveFrameToDb(frame, m_blockIndex);
 
             // Actualizamos contadores
             m_totalSamples += m_cfg.blockSize;
@@ -125,11 +190,11 @@ void DSPWorker::processChunk(const QVector<float>& samples, qint64 timestamp)
     }
 }
 
-void DSPWorker::flushResidual()
-{
+void DSPWorker::flushResidual() {
     if (m_accumBuffer.isEmpty()) {
         return;
     }
+
     if (m_cfg.sampleRate <= 0) {
         emit errorOccurred("sampleRate inválido para flushResidual");
         return;
@@ -146,10 +211,8 @@ void DSPWorker::flushResidual()
         // Procesamos el bloque residual
         FrameData frame = processBlock(m_accumBuffer, blockTs, m_totalSamples);
 
-        // Guardamos solo los picos en DB (el bloque raw ya se guardó en processBlock)
-        if (m_db && m_cfg.enablePeaks && frame.waveform.size() >= 2) {
-            m_db->insertPeak(m_blockIndex, frame.sampleOffset, frame.waveform[0], frame.waveform[1]);
-        }
+        // Guardamos en la base de datos
+        saveFrameToDb(frame, m_blockIndex);
 
         // Emitimos como batch de un solo frame
         QVector<FrameData> batch;
@@ -177,15 +240,17 @@ void DSPWorker::reset() {
     m_hanningWindow.clear();
     m_startTimestamp = -1;
 
+    // Reinicializar calculador de espectrograma
+    initializeSpectrogramCalculator();
+
     emit statsUpdated(0, 0, 0);
 }
 
 FrameData DSPWorker::processBlock(const QVector<float>& block,
                                   qint64 timestamp,
-                                  qint64 sampleOffset)
-{
+                                  qint64 sampleOffset) {
     FrameData frame;
-    frame.timestamp    = timestamp;
+    frame.timestamp = timestamp;
     frame.sampleOffset = sampleOffset;
 
     if (block.isEmpty()) {
@@ -210,9 +275,17 @@ FrameData DSPWorker::processBlock(const QVector<float>& block,
             frame.waveform[0] = block[0];
         }
 
-        // --- FFT para espectrograma ---
-        if (m_cfg.enableSpectrum) {
+        // --- Espectrograma usando SpectrogramCalculator ---
+        if (m_cfg.enableSpectrum && m_spectrogramCalc) {
+            auto spectrogramFrame = m_spectrogramCalc->calculateFrame(block, timestamp, sampleOffset);
+            frame.spectrum = spectrogramFrame.magnitudes;
+            frame.frequencies = spectrogramFrame.frequencies;
+            frame.windowGain = spectrogramFrame.windowGain;
+        } else if (m_cfg.enableSpectrum) {
+            // Fallback al método legacy
             frame.spectrum = calculateSpectrum(block);
+            frame.frequencies = getFrequencyBins();
+            frame.windowGain = 1.0f;
         }
 
         // --- Guardar bloque raw en la base de datos ---
@@ -227,72 +300,6 @@ FrameData DSPWorker::processBlock(const QVector<float>& block,
     }
 
     return frame;
-}
-
-
-QVector<float> DSPWorker::calculateSpectrum(const QVector<float>& block) {
-    int N = m_cfg.fftSize;
-    QVector<float> magnitudes;
-
-    // Calcular ventana de Hanning una sola vez
-    if (!m_windowCalculated) {
-        m_hanningWindow = calculateHanningWindow(N);
-        m_windowCalculated = true;
-        qDebug() << "DSPWorker: ventana de Hanning calculada para N=" << N;
-    }
-
-    // Preparar datos de entrada con zero-padding si es necesario
-    QVector<float> in(N, 0.0f);
-    int copySize = std::min<int>(block.size(), N);
-
-    // Copiar y aplicar ventana
-    for (int i = 0; i < copySize; ++i) {
-        in[i] = block[i] * m_hanningWindow[i];
-    }
-
-    // Configurar FFT
-    int bins = N / 2 + 1;
-    fftwf_complex* out = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * bins);
-
-    if (!out) {
-        emit errorOccurred("Error allocando memoria para FFT");
-        return magnitudes;
-    }
-
-    fftwf_plan plan = fftwf_plan_dft_r2c_1d(N, in.data(), out, FFTW_ESTIMATE);
-
-    if (!plan) {
-        fftwf_free(out);
-        emit errorOccurred("Error creando plan FFT");
-        return magnitudes;
-    }
-
-    // Ejecutar FFT
-    fftwf_execute(plan);
-
-    // Calcular magnitudes
-    magnitudes.resize(bins);
-    for (int i = 0; i < bins; ++i) {
-        float real = out[i][0];
-        float imag = out[i][1];
-        magnitudes[i] = std::sqrt(real * real + imag * imag);
-
-        // Normalizar por el tamaño de la FFT
-        magnitudes[i] /= N;
-
-        // Aplicar escala logarítmica si se desea
-        if (magnitudes[i] > 0.0f) {
-            magnitudes[i] = 20.0f * std::log10f(magnitudes[i]);
-        } else {
-            magnitudes[i] = -100.0f; // Piso de ruido
-        }
-    }
-
-    // Limpiar recursos FFT
-    fftwf_destroy_plan(plan);
-    fftwf_free(out);
-
-    return magnitudes;
 }
 
 void DSPWorker::saveFrameToDb(const FrameData& frame, qint64 blockIndex) {
@@ -312,6 +319,58 @@ void DSPWorker::saveFrameToDb(const FrameData& frame, qint64 blockIndex) {
     }
 }
 
+void DSPWorker::initializeSpectrogramCalculator() {
+    try {
+        SpectrogramConfig spectrogramConfig;
+        spectrogramConfig.fftSize = m_cfg.fftSize;
+        spectrogramConfig.hopSize = m_cfg.hopSize;
+        spectrogramConfig.sampleRate = m_cfg.sampleRate;
+        spectrogramConfig.windowType = static_cast<WindowType>(m_cfg.windowType);
+        spectrogramConfig.kaiserBeta = m_cfg.kaiserBeta;
+        spectrogramConfig.gaussianSigma = m_cfg.gaussianSigma;
+        spectrogramConfig.logScale = m_cfg.logScale;
+        spectrogramConfig.noiseFloor = m_cfg.noiseFloor;
+
+        m_spectrogramCalc = std::make_unique<SpectrogramCalculator>(spectrogramConfig, this);
+
+        // Conectar señales de error
+        connect(m_spectrogramCalc.get(), &SpectrogramCalculator::errorOccurred,
+                this, &DSPWorker::errorOccurred);
+
+        qDebug() << "SpectrogramCalculator inicializado:" << m_spectrogramCalc->getWindowInfo();
+    }
+    catch (const std::exception& e) {
+        emit errorOccurred(QString("Error inicializando SpectrogramCalculator: %1").arg(e.what()));
+    }
+}
+
+void DSPWorker::updateSpectrogramConfig() {
+    if (!m_spectrogramCalc) {
+        initializeSpectrogramCalculator();
+        return;
+    }
+
+    try {
+        SpectrogramConfig spectrogramConfig;
+        spectrogramConfig.fftSize = m_cfg.fftSize;
+        spectrogramConfig.hopSize = m_cfg.hopSize;
+        spectrogramConfig.sampleRate = m_cfg.sampleRate;
+        spectrogramConfig.windowType = static_cast<WindowType>(m_cfg.windowType);
+        spectrogramConfig.kaiserBeta = m_cfg.kaiserBeta;
+        spectrogramConfig.gaussianSigma = m_cfg.gaussianSigma;
+        spectrogramConfig.logScale = m_cfg.logScale;
+        spectrogramConfig.noiseFloor = m_cfg.noiseFloor;
+
+        m_spectrogramCalc->setConfig(spectrogramConfig);
+
+        qDebug() << "SpectrogramCalculator actualizado:" << m_spectrogramCalc->getWindowInfo();
+    }
+    catch (const std::exception& e) {
+        emit errorOccurred(QString("Error actualizando SpectrogramCalculator: %1").arg(e.what()));
+    }
+}
+
+// Métodos legacy mantenidos para compatibilidad
 void DSPWorker::handleBlock(const QVector<float>& block, qint64 timestamp) {
     // Método mantenido para compatibilidad, pero ya no se usa
     // Todo el procesamiento se hace ahora en processBlock
@@ -320,6 +379,44 @@ void DSPWorker::handleBlock(const QVector<float>& block, qint64 timestamp) {
 void DSPWorker::calculateSpectrum(const QVector<float>& block, qint64 timestamp) {
     // Método mantenido para compatibilidad, pero ya no se usa
     // Todo el procesamiento se hace ahora en processBlock
+}
+
+QVector<float> DSPWorker::calculateSpectrum(const QVector<float>& block) {
+    // Método legacy para compatibilidad
+    int N = m_cfg.fftSize;
+    QVector<float> magnitudes;
+
+    // Calcular ventana de Hanning una sola vez
+    if (!m_windowCalculated) {
+        m_hanningWindow = calculateHanningWindow(N);
+        m_windowCalculated = true;
+        qDebug() << "DSPWorker: ventana de Hanning calculada para N=" << N;
+    }
+
+    // Preparar datos de entrada con zero-padding si es necesario
+    QVector<float> in(N, 0.0f);
+    int copySize = std::min<int>(block.size(), N);
+
+    // Copiar y aplicar ventana
+    for (int i = 0; i < copySize; ++i) {
+        in[i] = block[i] * m_hanningWindow[i];
+    }
+
+    // Este es el método simplificado - en producción se usaría FFTW
+    int bins = N / 2 + 1;
+    magnitudes.resize(bins);
+
+    // Simulación simple de FFT (reemplazar con FFTW real)
+    for (int i = 0; i < bins; ++i) {
+        magnitudes[i] = std::abs(in[i % in.size()]);
+        if (magnitudes[i] > 0.0f) {
+            magnitudes[i] = 20.0f * std::log10f(magnitudes[i]);
+        } else {
+            magnitudes[i] = -100.0f;
+        }
+    }
+
+    return magnitudes;
 }
 
 QVector<float> DSPWorker::calculateHanningWindow(int size) const {
@@ -349,24 +446,4 @@ QVector<float> DSPWorker::applyWindow(const QVector<float>& samples,
     }
 
     return result;
-}
-
-QVector<float> DSPWorker::getFrequencyBins() const {
-    int bins = m_cfg.fftSize / 2 + 1;
-    QVector<float> freqs(bins);
-
-    float freqStep = static_cast<float>(m_cfg.sampleRate) / m_cfg.fftSize;
-
-    for (int i = 0; i < bins; ++i) {
-        freqs[i] = i * freqStep;
-    }
-
-    return freqs;
-}
-
-QString DSPWorker::getStatusInfo() const {
-    return QString("DSPWorker: %1 bloques, %2 muestras, buffer: %3")
-    .arg(m_blockIndex)
-        .arg(m_totalSamples)
-        .arg(m_accumBuffer.size());
 }

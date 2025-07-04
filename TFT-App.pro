@@ -25,9 +25,9 @@ SOURCES += \
     mainwindow.cpp \
     network_receiver.cpp \
     realtime_spectrogram.cpp \
+    spectrogram_calculator.cpp \
     spectrogram_renderer.cpp \
-    waveform_render.cpp \
-    waveform_widget.cpp
+    waveform_render.cpp
     #tests/audio_processor_test.cpp \
 
 HEADERS += \
@@ -39,9 +39,9 @@ HEADERS += \
     mainwindow.h \
     network_receiver.h \
     realtime_spectrogram.h \
+    spectrogram_calculator.h \
     spectrogram_renderer.h \
-    waveform_render.h \
-    waveform_widget.h
+    waveform_render.h
 
 FORMS += \
     mainwindow.ui
