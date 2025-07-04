@@ -36,18 +36,17 @@ void NetworkReceiver::start() {
         return;
     }
 
-    // 1) Pipeline mejorado con manejo de errores
+    // 1) Pipeline sin caps fijas: dejaremos que decodebin entregue cualquier raw audio
     QString pipelineStr = QString(
                               "souphttpsrc location=%1 ! "
                               "decodebin name=decoder ! "
                               "audioconvert ! audioresample ! "
-                              "audio/x-raw,format=S16LE,channels=2,rate=44100 ! "  // Caps fijas para consistencia
                               "appsink name=sink emit-signals=true sync=false max-buffers=10 drop=true"
                               ).arg(m_url);
 
     qDebug() << "Pipeline GStreamer:" << pipelineStr;
 
-    // 2) Crear pipeline con manejo de errores
+    // 2) Crear pipeline
     GError* err = nullptr;
     m_pipeline = gst_parse_launch(pipelineStr.toUtf8().constData(), &err);
     if (!m_pipeline || err) {
@@ -57,48 +56,32 @@ void NetworkReceiver::start() {
         return;
     }
 
-    // 3) Obtener appsink
+    // 3) Obtener appsink y callbacks (igual que antes)
     m_appsink = GST_APP_SINK(gst_bin_get_by_name(GST_BIN(m_pipeline), "sink"));
-    if (!m_appsink) {
-        qCritical() << "No se pudo obtener el appsink";
-        cleanup();
-        return;
-    }
-
-    // 4) Configurar callbacks
+    if (!m_appsink) { qCritical() << "No se pudo obtener el appsink"; cleanup(); return; }
     GstAppSinkCallbacks callbacks = {};
     callbacks.new_sample = onNewSample;
-    callbacks.eos = onEos;
+    callbacks.eos        = onEos;
     gst_app_sink_set_callbacks(m_appsink, &callbacks, this, nullptr);
 
-    // 5) Configurar bus
+    // 4) Bus y decodebin pad-added (igual que antes)
     m_bus = gst_element_get_bus(m_pipeline);
-
-    // 6) Conectar señal pad-added para decodebin (manejo dinámico)
     GstElement* decoder = gst_bin_get_by_name(GST_BIN(m_pipeline), "decoder");
     if (decoder) {
         g_signal_connect(decoder, "pad-added", G_CALLBACK(onPadAdded), this);
         gst_object_unref(decoder);
     }
 
-    // 7) Cambiar estado a PLAYING
-    GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
-    if (ret == GST_STATE_CHANGE_FAILURE) {
+    // 5) PLAYING
+    if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         qCritical() << "No se pudo cambiar el pipeline a PLAYING";
         cleanup();
         return;
     }
 
-    // 8) Iniciar timer del bus
+    // 6) Iniciar timer y marcar running
     m_busTimer->start();
     m_isRunning = true;
-
-    // 9) Emitir formato conocido (ya que usamos caps fijas)
-    QAudioFormat fmt;
-    fmt.setSampleRate(44100);
-    fmt.setChannelCount(2);
-    fmt.setSampleFormat(QAudioFormat::Int16);
-    emit audioFormatDetected(fmt);
 
     qDebug() << "NetworkReceiver arrancado correctamente";
 }
@@ -177,24 +160,40 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
     if (!sample) return GST_FLOW_ERROR;
 
     GstBuffer* buffer = gst_sample_get_buffer(sample);
-    if (!buffer) {
+    GstCaps*   caps   = gst_sample_get_caps(sample);
+    if (!buffer || !caps) {
+        if (buffer) gst_buffer_unref(buffer);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
 
-    // Obtener caps para verificar formato
-    GstCaps* caps = gst_sample_get_caps(sample);
-    if (!caps) {
-        gst_sample_unref(sample);
-        return GST_FLOW_ERROR;
-    }
-
+    // 1) Leer el formato real de las caps
     GstStructure* structure = gst_caps_get_structure(caps, 0);
-    const gchar* format = gst_structure_get_string(structure, "format");
-    int channels = 0, rate = 0;
+    const gchar*  fmtStr    = gst_structure_get_string(structure, "format");
+    int           channels  = 0;
+    int           rate      = 0;
     gst_structure_get_int(structure, "channels", &channels);
     gst_structure_get_int(structure, "rate", &rate);
 
+    // 2) Construir y emitir un QAudioFormat dinámico la primera vez
+    static bool emittedFmt = false;
+    if (!emittedFmt) {
+        QAudioFormat fmt;
+        fmt.setSampleRate(rate);
+        fmt.setChannelCount(channels);
+        if (QString(fmtStr) == "S16LE") {
+            fmt.setSampleFormat(QAudioFormat::Int16);
+        } else if (QString(fmtStr) == "F32LE") {
+            fmt.setSampleFormat(QAudioFormat::Float);
+        } else {
+            // Otros posibles formatos raw, asume Float
+            fmt.setSampleFormat(QAudioFormat::Float);
+        }
+        emit audioFormatDetected(fmt);
+        emittedFmt = true;
+    }
+
+    // 3) Mapear buffer y convertir a float
     GstMapInfo info;
     if (!gst_buffer_map(buffer, &info, GST_MAP_READ)) {
         gst_sample_unref(sample);
@@ -202,42 +201,34 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
     }
 
     QVector<float> floats;
-    qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
+    int count = info.size / (QString(fmtStr) == "S16LE" ? sizeof(qint16) : sizeof(float));
+    floats.resize(count);
 
-    // Conversión basada en formato real
-    if (format && g_str_equal(format, "S16LE")) {
-        int count = info.size / sizeof(qint16);
-        floats.resize(count);
+    if (QString(fmtStr) == "S16LE") {
         const qint16* ptr = reinterpret_cast<const qint16*>(info.data);
         for (int i = 0; i < count; ++i) {
             floats[i] = ptr[i] / 32768.0f;
         }
-    } else if (format && g_str_equal(format, "F32LE")) {
-        int count = info.size / sizeof(float);
-        floats.resize(count);
+    } else {
         const float* ptr = reinterpret_cast<const float*>(info.data);
         for (int i = 0; i < count; ++i) {
             floats[i] = ptr[i];
         }
-    } else {
-        qWarning() << "Formato de audio no soportado:" << (format ? format : "unknown");
-        gst_buffer_unmap(buffer, &info);
-        gst_sample_unref(sample);
-        return GST_FLOW_ERROR;
     }
 
     gst_buffer_unmap(buffer, &info);
     gst_sample_unref(sample);
 
-    // Emitir en el hilo principal
+    // 4) Emitir en hilo principal
+    qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
     QMetaObject::invokeMethod(this, [this, floats, timestamp](){
-        if (m_isRunning) {
-            emit floatChunkReady(floats, timestamp);
-        }
+        if (m_isRunning) emit floatChunkReady(floats, timestamp);
     }, Qt::QueuedConnection);
 
     return GST_FLOW_OK;
 }
+
+
 void NetworkReceiver::handleEos() {
     qDebug() << "End of stream";
     QMetaObject::invokeMethod(this, [this](){
