@@ -4,13 +4,13 @@
 #include <QDateTime>
 #include <QDebug>
 #include <algorithm>
-#include <complex>
 #include <cmath>
 
 DSPWorker::DSPWorker(const DSPConfig& cfg, AudioDb* db, QObject* parent)
     : QObject(parent)
     , m_cfg(cfg)
     , m_db(db)
+    , m_startTimestampNs(-1)  // Inicializar explícitamente
 {
     if (!m_db) {
         qWarning() << "DSPWorker: AudioDb es nullptr";
@@ -127,68 +127,76 @@ QString DSPWorker::getSpectrogramInfo() const {
     return "SpectrogramCalculator no disponible";
 }
 
-void DSPWorker::processChunk(const QVector<float>& samples, qint64 timestamp) {
+void DSPWorker::processChunk(const QVector<float>& samples, quint64 timestampNs) {
+    qDebug() << "processChunk: offsetNs recibido =" << timestampNs;
+
     if (samples.isEmpty()) {
         emit errorOccurred("Chunk de muestras vacío");
         return;
     }
-
     if (m_cfg.blockSize <= 0 || m_cfg.sampleRate <= 0) {
         emit errorOccurred("Configuración inválida (blockSize o sampleRate ≤ 0)");
         return;
     }
 
-    try {
-        // Si es el primer bloque de toda la sesión, fijamos el origin timestamp
-        if (m_startTimestamp < 0) {
-            m_startTimestamp = timestamp;
-        }
-
-        // Acumulamos muestras
-        m_accumBuffer += samples;
-
-        // Preparamos batch de frames
-        QVector<FrameData> batch;
-
-        // Procesamos todos los bloques completos
-        while (m_accumBuffer.size() >= m_cfg.blockSize) {
-            QVector<float> block = m_accumBuffer.mid(0, m_cfg.blockSize);
-            m_accumBuffer.erase(
-                m_accumBuffer.begin(),
-                m_accumBuffer.begin() + m_cfg.blockSize
-                );
-
-            // Calculamos el timestamp para este bloque
-            qint64 deltaMs = qRound(1000.0 *
-                                    (static_cast<double>(m_totalSamples) / m_cfg.sampleRate));
-            qint64 blockTs = m_startTimestamp + deltaMs;
-
-            // Procesamos el bloque y lo agregamos al batch
-            FrameData frame = processBlock(block, blockTs, m_totalSamples);
-            batch.append(frame);
-
-            // Guardamos en la base de datos
-            saveFrameToDb(frame, m_blockIndex);
-
-            // Actualizamos contadores
-            m_totalSamples += m_cfg.blockSize;
-            ++m_blockIndex;
-        }
-
-        // Emitimos el batch si hay frames procesados
-        if (!batch.isEmpty()) {
-            emit framesReady(batch);
-        }
-
-        // Estadísticas periódicas
-        if (m_blockIndex % 100 == 0) {
-            emit statsUpdated(m_blockIndex, m_totalSamples, m_accumBuffer.size());
-        }
+    // 1) Guardar el offset inicial si aún no lo hemos hecho
+    if (m_startTimestampNs < 0) {
+        m_startTimestampNs = timestampNs;
+        qDebug() << "DSPWorker: offset inicial establecido a" << m_startTimestampNs << "ns";
     }
-    catch (const std::exception& e) {
-        emit errorOccurred(QString("Error procesando chunk: %1").arg(e.what()));
+
+    // 2) Acumular muestras
+    m_accumBuffer += samples;
+
+    // 3) Preparar el batch de frames
+    QVector<FrameData> batch;
+    const double nsPerSample = 1e9 / double(m_cfg.sampleRate);
+
+    // 4) Procesar todos los bloques completos
+    while (m_accumBuffer.size() >= m_cfg.blockSize) {
+        // 4.1) Extraer un bloque
+        QVector<float> block = m_accumBuffer.mid(0, m_cfg.blockSize);
+        m_accumBuffer.erase(
+            m_accumBuffer.begin(),
+            m_accumBuffer.begin() + m_cfg.blockSize
+            );
+
+        // 4.2) Calcular timestamp del bloque como offset desde el inicio
+        quint64 deltaNs   = static_cast<quint64>(m_totalSamples * nsPerSample);
+        quint64 blockTsNs = m_startTimestampNs + deltaNs;
+
+        // Debug: sólo los primeros 5 bloques
+        if (m_blockIndex < 5) {
+            qDebug() << "Bloque" << m_blockIndex
+                     << "- offsetStart:" << m_startTimestampNs
+                     << "deltaNs:" << deltaNs
+                     << "blockOffsetNs:" << blockTsNs;
+        }
+
+        // 4.3) Procesar el bloque
+        FrameData frame = processBlock(block, blockTsNs, m_totalSamples);
+        batch.append(frame);
+
+        // 4.4) Guardar en la base de datos usando este offset
+        saveFrameToDb(frame, m_blockIndex);
+
+        // 4.5) Actualizar contadores
+        m_totalSamples += m_cfg.blockSize;
+        ++m_blockIndex;
+    }
+
+    // 5) Emitir los frames procesados
+    if (!batch.isEmpty()) {
+        emit framesReady(batch);
+    }
+
+    // 6) Estadísticas cada 100 bloques
+    if (m_blockIndex % 100 == 0) {
+        emit statsUpdated(m_blockIndex, m_totalSamples, m_accumBuffer.size());
     }
 }
+
+
 
 void DSPWorker::flushResidual() {
     if (m_accumBuffer.isEmpty()) {
@@ -200,16 +208,22 @@ void DSPWorker::flushResidual() {
         return;
     }
 
+    // Verificar que tenemos un timestamp válido
+    if (m_startTimestampNs < 0) {
+        qWarning() << "DSPWorker: flushResidual sin timestamp válido, usando timestamp actual";
+        m_startTimestampNs = getCurrentTimestampNs();
+    }
+
     try {
         qDebug() << "DSPWorker: procesando" << m_accumBuffer.size() << "muestras residuales";
 
-        // Timestamp para el último trozo
-        qint64 deltaMs = qRound(1000.0 *
-                                (static_cast<double>(m_totalSamples) / m_cfg.sampleRate));
-        qint64 blockTs = m_startTimestamp + deltaMs;
+        // Calcular timestamp para el último trozo en nanosegundos
+        const double nsPerSample = 1e9 / double(m_cfg.sampleRate);
+        quint64 deltaNs = static_cast<quint64>(m_totalSamples * nsPerSample);
+        quint64 blockTsNs = m_startTimestampNs + deltaNs;
 
         // Procesamos el bloque residual
-        FrameData frame = processBlock(m_accumBuffer, blockTs, m_totalSamples);
+        FrameData frame = processBlock(m_accumBuffer, blockTsNs, m_totalSamples);
 
         // Guardamos en la base de datos
         saveFrameToDb(frame, m_blockIndex);
@@ -220,6 +234,7 @@ void DSPWorker::flushResidual() {
         emit framesReady(batch);
 
         m_totalSamples += m_accumBuffer.size();
+        ++m_blockIndex;
         m_accumBuffer.clear();
 
         // Estadísticas finales
@@ -238,7 +253,7 @@ void DSPWorker::reset() {
     m_blockIndex = 0;
     m_windowCalculated = false;
     m_hanningWindow.clear();
-    m_startTimestamp = -1;
+    m_startTimestampNs = -1;
 
     // Reinicializar calculador de espectrograma
     initializeSpectrogramCalculator();
@@ -247,7 +262,7 @@ void DSPWorker::reset() {
 }
 
 FrameData DSPWorker::processBlock(const QVector<float>& block,
-                                  qint64 timestamp,
+                                  quint64 timestamp,
                                   qint64 sampleOffset) {
     FrameData frame;
     frame.timestamp = timestamp;
@@ -292,7 +307,10 @@ FrameData DSPWorker::processBlock(const QVector<float>& block,
         if (m_db) {
             QByteArray blob(reinterpret_cast<const char*>(block.constData()),
                             block.size() * sizeof(float));
-            m_db->insertBlock(m_blockIndex, sampleOffset, blob);
+            m_db->insertBlock(m_blockIndex,
+                              frame.sampleOffset,
+                              blob,
+                              frame.timestamp);
         }
 
     } catch (const std::exception& e) {
@@ -306,9 +324,15 @@ void DSPWorker::saveFrameToDb(const FrameData& frame, qint64 blockIndex) {
     if (!m_db) return;
 
     try {
+        // Verificar timestamp antes de guardar
+        if (frame.timestamp == 0 || frame.timestamp == static_cast<quint64>(-1)) {
+            qWarning() << "DSPWorker: timestamp inválido en bloque" << blockIndex
+                       << ":" << frame.timestamp;
+        }
+
         // Guardar picos si están habilitados
         if (m_cfg.enablePeaks && frame.waveform.size() >= 2) {
-            m_db->insertPeak(blockIndex, frame.sampleOffset, frame.waveform[0], frame.waveform[1]);
+            m_db->insertPeak(blockIndex, frame.sampleOffset, frame.waveform[0], frame.waveform[1], frame.timestamp);
         }
 
         // Nota: El bloque raw ya se guardó en processBlock()
@@ -317,6 +341,31 @@ void DSPWorker::saveFrameToDb(const FrameData& frame, qint64 blockIndex) {
     } catch (const std::exception& e) {
         emit errorOccurred(QString("Error guardando en DB: %1").arg(e.what()));
     }
+}
+
+quint64 DSPWorker::validateTimestamp(quint64 timestampNs) {
+    // Verificar si el timestamp es válido
+    if (timestampNs == 0 || timestampNs == static_cast<quint64>(-1)) {
+        qWarning() << "DSPWorker: timestamp inválido recibido:" << timestampNs
+                   << "- usando timestamp actual";
+        return getCurrentTimestampNs();
+    }
+
+    // Verificar si el timestamp está en un rango razonable
+    quint64 currentNs = getCurrentTimestampNs();
+    quint64 maxDiff = 3600ULL * 1000000000ULL; // 1 hora en nanosegundos
+
+    if (timestampNs > currentNs + maxDiff || timestampNs < currentNs - maxDiff) {
+        qWarning() << "DSPWorker: timestamp fuera de rango:" << timestampNs
+                   << "vs actual:" << currentNs << "- usando timestamp actual";
+        return currentNs;
+    }
+
+    return timestampNs;
+}
+
+quint64 DSPWorker::getCurrentTimestampNs() {
+    return static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000000ULL;
 }
 
 void DSPWorker::initializeSpectrogramCalculator() {

@@ -9,51 +9,24 @@
 #include <QIODevice>
 #include <QDateTime>
 
-struct AudioConfig {
-    // Configuración del formato de audio
-    int sampleRate = 44100;              // Frecuencia de muestreo (Hz)
-    int channelCount = 1;                // Número de canales (1=mono, 2=estéreo)
-    QAudioFormat::SampleFormat sampleFormat = QAudioFormat::Float;
-
-    // Configuración del dispositivo
-    QString deviceName;                  // Nombre específico del dispositivo (vacío = por defecto)
-    bool useDefaultDevice = true;        // Usar dispositivo por defecto
-
-    // Configuración de buffer
-    int bufferSize = 4096;               // Tamaño del buffer interno
-
-    // Configuración de comportamiento
-    bool usePreferredFormat = false;     // Si es true, ignora la config manual y usa el formato preferido del dispositivo
-    bool fallbackToPreferred = true;    // Si la config manual falla, intentar con formato preferido
-
-    // Constructor por defecto con valores sensatos
-    AudioConfig() = default;
-
-    // Constructor con parámetros básicos
-    AudioConfig(int rate, int channels, QAudioFormat::SampleFormat format = QAudioFormat::Int16)
-        : sampleRate(rate), channelCount(channels), sampleFormat(format) {}
-};
+// Reutilizamos ReceiverConfig para configuración unificada
+struct ReceiverConfig;
 
 class AudioReceiver : public IReceiver {
     Q_OBJECT
-
 public:
     explicit AudioReceiver(QObject* parent = nullptr);
-    explicit AudioReceiver(const AudioConfig& config, QObject* parent = nullptr);
     ~AudioReceiver() override;
 
-    // Configuración
-    void setAudioConfig(const AudioConfig& config);
-    AudioConfig getAudioConfig() const;
-
-    // Información del estado actual
-    QAudioFormat getCurrentFormat() const;
-    QAudioDevice getCurrentDevice() const;
-    QString getDeviceInfo() const;
+    // Configuración unificada
+    void setConfig(const ReceiverConfig& cfg) override;
 
 public slots:
     void start() override;
     void stop() override;
+
+signals:
+    // IReceiver ya define chunkReady, errorOccurred, finished, audioFormatDetected
 
 private slots:
     void handleReadyRead();
@@ -64,15 +37,22 @@ private:
     QAudioFormat setupAudioFormat(const QAudioDevice& device) const;
     bool validateConfiguration(const QAudioDevice& device, const QAudioFormat& format) const;
 
-    // Miembros
-    QAudioSource* m_audioSource = nullptr;
-    QIODevice*    m_ioDevice = nullptr;
-    AudioConfig   m_config;
+    // Configuración interna adaptada de ReceiverConfig
+    struct AudioConfig {
+        int sampleRate = 44100;
+        int channelCount = 1;
+        QAudioFormat::SampleFormat sampleFormat = QAudioFormat::Float;
+        QString deviceName;
+        bool usePreferredFormat = false;
+        int bufferSize = 4096;
+        bool fallbackToPreferred = true;
+    } m_cfg;
 
-    // Estado actual
+    // Estado runtime
+    QAudioSource* m_audioSource = nullptr;
+    QIODevice*    m_ioDevice    = nullptr;
     QAudioFormat  m_currentFormat;
     QAudioDevice  m_currentDevice;
-
     QVector<float> m_floatBuffer;
 };
 

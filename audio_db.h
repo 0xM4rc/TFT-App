@@ -10,16 +10,19 @@
 #include <QList>
 #include <QtTypes>
 
- struct PeakRecord {
-   qint64 timestamp;
-   qint64 blockIndex;
-   qint64 sampleOffset;
-   float   minValue;
+/**
+ * @brief Registro de pico (min/max) con metadatos
+ */
+struct PeakRecord {
+    qint64 timestamp;
+    qint64 blockIndex;
+    qint64 sampleOffset;
+    float   minValue;
     float   maxValue;
- };
+};
 
 /**
- * @brief Clase para manejar el almacenamiento de audio en base de datos SQLite
+ * @brief Clase para manejar almacenamiento de audio en SQLite
  */
 class AudioDb : public QObject
 {
@@ -29,98 +32,70 @@ public:
     explicit AudioDb(const QString& dbPath, QObject* parent = nullptr);
     ~AudioDb();
 
-    /**
-     * @brief Inicializa la base de datos y crea las tablas necesarias
-     * @return true si se inicializó correctamente
-     */
+    /** Inicializa la base de datos y crea las tablas necesarias */
     bool initialize();
 
-    /**
-     * @brief Limpia toda la base de datos
-     * @return true si se limpió correctamente
-     */
+    /** Borra todos los datos y reinicia contadores */
     bool clearDatabase();
 
-    /**
-     * @brief Inserta un bloque de audio
-     * @param blockIndex Índice del bloque
-     * @param sampleOffset Offset de muestras
-     * @param audioData Datos de audio en formato float32
-     * @return true si se insertó correctamente
-     */
-    bool insertBlock(qint64 blockIndex, qint64 sampleOffset, const QByteArray& audioData);
+    /** Inserta un bloque de audio (raw) */
+    bool insertBlock(qint64 blockIndex,
+                     qint64 sampleOffset,
+                     const QByteArray& audioData,
+                     quint64 timestampNs);
 
-    /**
-     * @brief Inserta información de picos (min/max)
-     * @param blockIndex Índice del bloque
-     * @param sampleOffset Offset de muestras
-     * @param minValue Valor mínimo
-     * @param maxValue Valor máximo
-     * @return true si se insertó correctamente
-     */
-    bool insertPeak(qint64 blockIndex, qint64 sampleOffset, float minValue, float maxValue);
+    /** Inserta un registro de pico (min/max) */
+    bool insertPeak(qint64 blockIndex,
+                    qint64 sampleOffset,
+                    float minValue,
+                    float maxValue,
+                    quint64 timestampNs);
 
-    /**
-     * @brief Obtiene todos los bloques de audio ordenados
-     * @return Lista de bloques de audio
-     */
+    /** Obtiene todos los bloques de audio en orden */
     QList<QByteArray> getAllAudioBlocks() const;
 
-    /**
-     * @brief Obtiene un bloque específico de audio
-     * @param blockIndex Índice del bloque
-     * @return Datos del bloque o array vacío si no existe
-     */
+    /** Obtiene un bloque específico */
     QByteArray getAudioBlock(qint64 blockIndex) const;
 
-    /**
-     * @brief Obtiene todos los picos ordenados
-     * @return Lista de pares (min, max)
-     */
+    /** Obtiene todos los picos en orden */
     QList<QPair<float, float>> getAllPeaks() const;
 
-    /**
-     * @brief Obtiene estadísticas de la base de datos
-     * @return String con información estadística
-     */
+    /** Obtiene estadísticas generales de la base de datos */
     QString getStatistics() const;
 
-    /**
-     * @brief Obtiene el número total de bloques almacenados
-     * @return Número de bloques
-     */
+    /** Número total de bloques almacenados */
     int getTotalBlocks() const;
 
-    /**
-     * @brief Obtiene el tamaño total de datos de audio
-     * @return Tamaño en bytes
-     */
+    /** Tamaño total en bytes de todos los bloques */
     qint64 getTotalAudioSize() const;
 
+    /** Devuelve los picos entre dos timestamps */
     QList<PeakRecord> getPeaksByTime(qint64 tStart, qint64 tEnd) const;
 
+    /** Obtiene el blob crudo de un bloque */
     QByteArray getRawBlock(qint64 blockIndex) const;
 
+    /** Obtiene n bloques a partir de un sampleOffset */
     QList<QByteArray> getBlocksByOffset(qint64 offsetStart, int nBlocks) const;
 
+    /** Devuelve el timestamp (ns) de un bloque dado */
+    quint64 getBlockTimestamp(qint64 blockIndex) const;
 
+    /** Devuelve el sampleOffset de un bloque dado */
+    qint64  getBlockSampleOffset(qint64 blockIndex) const;
 
 signals:
-    /**
-     * @brief Emitido cuando ocurre un error en la base de datos
-     * @param error Descripción del error
-     */
-    void errorOccurred(const QString& error);
+    /** Emitido al ocurrir un error en la base de datos */
+    void errorOccurred(const QString& error) const;
 
 private:
     bool createTables();
     bool executeQuery(const QString& query, const QString& operation = "");
-    void logError(const QString& operation, const QSqlError& error);
+    void logError(const QString& operation, const QSqlError& error) const;
 
-private:
-    QString m_dbPath;
+    QString      m_dbPath;
     QSqlDatabase m_db;
-    bool m_initialized = false;
+    bool         m_initialized = false;
 };
 
 #endif // AUDIO_DB_H

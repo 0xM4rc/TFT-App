@@ -14,12 +14,12 @@ class SpectrogramCalculator;
  * @brief Datos de un frame procesado
  */
 struct FrameData {
-    qint64 timestamp;
-    qint64 sampleOffset;
-    QVector<float> waveform;
-    QVector<float> spectrum;
-    QVector<float> frequencies;  // Añadido para frecuencias del espectrograma
-    float windowGain = 1.0f;     // Añadido para ganancia de ventana
+    quint64 timestamp;              ///< Timestamp en nanosegundos
+    qint64 sampleOffset;            ///< Offset de muestra desde el inicio
+    QVector<float> waveform;        ///< Datos de forma de onda
+    QVector<float> spectrum;        ///< Espectro de frecuencias
+    QVector<float> frequencies;     ///< Frecuencias correspondientes a cada bin
+    float windowGain = 1.0f;        ///< Ganancia de la ventana aplicada
 };
 
 /**
@@ -58,6 +58,8 @@ struct DSPConfig {
  *
  * Procesa chunks de audio, calcula picos, espectrograma y
  * almacena resultados en base de datos.
+ *
+ * Todos los timestamps se manejan en nanosegundos para máxima precisión.
  */
 class DSPWorker : public QObject
 {
@@ -92,8 +94,8 @@ public:
     QString getSpectrogramInfo() const;
 
 public slots:
-    /** Procesa un chunk de muestras de audio */
-    void processChunk(const QVector<float>& samples, qint64 timestamp);
+    /** Procesa un chunk de muestras de audio con timestamp en nanosegundos */
+    void processChunk(const QVector<float>& samples, quint64 timestampNs);
 
     /** Procesa las muestras residuales al finalizar */
     void flushResidual();
@@ -112,8 +114,8 @@ signals:
     void statsUpdated(qint64 blocksProcessed, qint64 samplesProcessed, int bufferSize);
 
 private:
-    /** Procesa un bloque individual de muestras */
-    FrameData processBlock(const QVector<float>& block, qint64 timestamp, qint64 sampleOffset);
+    /** Procesa un bloque individual de muestras con timestamp en nanosegundos */
+    FrameData processBlock(const QVector<float>& block, quint64 timestampNs, qint64 sampleOffset);
 
     /** Guarda un frame en la base de datos */
     void saveFrameToDb(const FrameData& frame, qint64 blockIndex);
@@ -123,6 +125,12 @@ private:
 
     /** Actualiza la configuración del calculador de espectrograma */
     void updateSpectrogramConfig();
+
+    /** Valida y corrige timestamps inválidos */
+    quint64 validateTimestamp(quint64 timestampNs);
+
+    /** Obtiene el timestamp actual en nanosegundos */
+    quint64 getCurrentTimestampNs();
 
     // Métodos legacy mantenidos para compatibilidad
     void handleBlock(const QVector<float>& block, qint64 timestamp);
@@ -136,7 +144,7 @@ private:
     DSPConfig m_cfg;                    ///< Configuración DSP
     AudioDb* m_db;                      ///< Puntero a la base de datos
     QVector<float> m_accumBuffer;       ///< Buffer de acumulación
-    qint64 m_startTimestamp = -1;       ///< Timestamp de inicio
+    qint64 m_startTimestampNs = 0;     ///< Timestamp de inicio en nanosegundos
     qint64 m_totalSamples = 0;          ///< Total de muestras procesadas
     qint64 m_blockIndex = 0;            ///< Índice de bloque
 

@@ -34,6 +34,9 @@ HEADERS += \
     audio_receiver.h \
     dsp_worker.h \
     ireceiver.h \
+    libmodels/audio_block_model.h \
+    libmodels/peak_model.h \
+    libmodels/spectrogram_model.h \
     mainwindow.h \
     network_receiver.h \
     realtime_spectrogram.h \
@@ -53,3 +56,9 @@ CONFIG += lrelease embed_translations
 qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
+
+DISTFILES +=
+
+SUBDIRS += \
+    tests/libcore/tests.pro \
+    tests/libcore/tests.pro

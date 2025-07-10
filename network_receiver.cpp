@@ -154,10 +154,13 @@ gboolean NetworkReceiver::onBusMessage(GstBus* /*bus*/, GstMessage* msg, gpointe
 // ——— Implementaciones de instancia ———
 
 GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
-    if (!m_isRunning) return GST_FLOW_FLUSHING;
+    if (!m_isRunning)
+        return GST_FLOW_FLUSHING;
 
+    // 1) Pull the sample
     GstSample* sample = gst_app_sink_pull_sample(appsink);
-    if (!sample) return GST_FLOW_ERROR;
+    if (!sample)
+        return GST_FLOW_ERROR;
 
     GstBuffer* buffer = gst_sample_get_buffer(sample);
     GstCaps*   caps   = gst_sample_get_caps(sample);
@@ -167,7 +170,16 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
         return GST_FLOW_ERROR;
     }
 
-    // 1) Leer el formato real de las caps
+    // 2) Extract PTS (in nanoseconds)
+    GstClockTime pts = GST_BUFFER_PTS(buffer);
+    guint64 timestampNs;
+    if (pts != GST_CLOCK_TIME_NONE) {
+        timestampNs = pts;
+    } else {
+        timestampNs = static_cast<guint64>(QDateTime::currentMSecsSinceEpoch()) * 1'000'000ULL;
+    }
+
+    // 3) Read the real format from caps
     GstStructure* structure = gst_caps_get_structure(caps, 0);
     const gchar*  fmtStr    = gst_structure_get_string(structure, "format");
     int           channels  = 0;
@@ -175,7 +187,7 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
     gst_structure_get_int(structure, "channels", &channels);
     gst_structure_get_int(structure, "rate", &rate);
 
-    // 2) Construir y emitir un QAudioFormat dinámico la primera vez
+    // 4) Emit audioFormatDetected once
     static bool emittedFmt = false;
     if (!emittedFmt) {
         QAudioFormat fmt;
@@ -186,32 +198,50 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
         } else if (QString(fmtStr) == "F32LE") {
             fmt.setSampleFormat(QAudioFormat::Float);
         } else {
-            // Otros posibles formatos raw, asume Float
             fmt.setSampleFormat(QAudioFormat::Float);
         }
         emit audioFormatDetected(fmt);
         emittedFmt = true;
     }
 
-    // 3) Mapear buffer y convertir a float
+    // 5) Get buffer duration
+    GstClockTime duration = GST_BUFFER_DURATION(buffer);
+
+    // 6) Map buffer and compute sample count
     GstMapInfo info;
     if (!gst_buffer_map(buffer, &info, GST_MAP_READ)) {
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
+    int sampleSize = (QString(fmtStr) == "S16LE" ? sizeof(qint16) : sizeof(float));
+    int sampleCount = info.size / sampleSize;
 
-    QVector<float> floats;
-    int count = info.size / (QString(fmtStr) == "S16LE" ? sizeof(qint16) : sizeof(float));
-    floats.resize(count);
+    // 7) Compute duration in seconds and arrival frequency
+    double durSec;
+    if (duration != GST_CLOCK_TIME_NONE) {
+        durSec = double(duration) / GST_SECOND;
+    } else {
+        durSec = double(sampleCount) / double(rate);
+    }
+    double freqHz = 1.0 / durSec;
 
+    // 8) Debug output: block size, rate, duration, frequency
+    qDebug() << QString("Buffer de %1 muestras a %2 Hz → %.3f s → freq ≈ %.1f Hz")
+                    .arg(sampleCount)
+                    .arg(rate)
+                    .arg(durSec, 0, 'f', 3)
+                    .arg(freqHz, 0, 'f', 1);
+
+    // 9) Convert to floats
+    QVector<float> floats(sampleCount);
     if (QString(fmtStr) == "S16LE") {
         const qint16* ptr = reinterpret_cast<const qint16*>(info.data);
-        for (int i = 0; i < count; ++i) {
+        for (int i = 0; i < sampleCount; ++i) {
             floats[i] = ptr[i] / 32768.0f;
         }
     } else {
         const float* ptr = reinterpret_cast<const float*>(info.data);
-        for (int i = 0; i < count; ++i) {
+        for (int i = 0; i < sampleCount; ++i) {
             floats[i] = ptr[i];
         }
     }
@@ -219,14 +249,15 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
     gst_buffer_unmap(buffer, &info);
     gst_sample_unref(sample);
 
-    // 4) Emitir en hilo principal
-    qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
-    QMetaObject::invokeMethod(this, [this, floats, timestamp](){
-        if (m_isRunning) emit floatChunkReady(floats, timestamp);
+    // 10) Emit floats + nanosecond timestamp on the main thread
+    QMetaObject::invokeMethod(this, [this, floats = std::move(floats), timestampNs]() {
+        if (m_isRunning)
+            emit floatChunkReady(floats, timestampNs);
     }, Qt::QueuedConnection);
 
     return GST_FLOW_OK;
 }
+
 
 
 void NetworkReceiver::handleEos() {

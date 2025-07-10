@@ -1,4 +1,3 @@
-// audio_db.cpp
 #include "audio_db.h"
 #include <QDebug>
 #include <QDir>
@@ -86,7 +85,9 @@ bool AudioDb::clearDatabase() {
     return true;
 }
 
-bool AudioDb::insertBlock(qint64 blockIndex, qint64 sampleOffset, const QByteArray& audioData) {
+bool AudioDb::insertBlock(qint64 blockIndex, qint64 sampleOffset,
+                            const QByteArray& audioData,
+                            quint64 timestampNs) {
     if (!m_initialized || audioData.isEmpty()) {
         return false;
     }
@@ -99,7 +100,7 @@ bool AudioDb::insertBlock(qint64 blockIndex, qint64 sampleOffset, const QByteArr
     query.addBindValue(sampleOffset);
     query.addBindValue(audioData);
     query.addBindValue(audioData.size());
-    query.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    query.addBindValue(static_cast<qint64>(timestampNs));
 
     if (!query.exec()) {
         logError("insertar bloque de audio", query.lastError());
@@ -109,20 +110,23 @@ bool AudioDb::insertBlock(qint64 blockIndex, qint64 sampleOffset, const QByteArr
     return true;
 }
 
-bool AudioDb::insertPeak(qint64 blockIndex, qint64 sampleOffset, float minValue, float maxValue) {
+bool AudioDb::insertPeak(qint64 blockIndex, qint64 sampleOffset, float minValue, float maxValue, quint64 timestampNs) {
     if (!m_initialized) {
         return false;
     }
 
     QSqlQuery query(m_db);
-    query.prepare("INSERT INTO audio_peaks (block_index, sample_offset, min_value, max_value, timestamp) "
-                  "VALUES (?, ?, ?, ?, ?)");
+    query.prepare(R"(
+        INSERT INTO audio_peaks
+            (block_index, sample_offset, min_value, max_value, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    )");
 
     query.addBindValue(blockIndex);
     query.addBindValue(sampleOffset);
     query.addBindValue(minValue);
     query.addBindValue(maxValue);
-    query.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    query.addBindValue(static_cast<qint64>(timestampNs));
 
     if (!query.exec()) {
         logError("insertar pico de audio", query.lastError());
@@ -328,7 +332,7 @@ bool AudioDb::executeQuery(const QString& queryStr, const QString& operation) {
     return true;
 }
 
-void AudioDb::logError(const QString& operation, const QSqlError& error) {
+void AudioDb::logError(const QString& operation, const QSqlError& error) const {
     QString errorMsg = QString("Error en %1: %2").arg(operation).arg(error.text());
     qCritical() << errorMsg;
     emit errorOccurred(errorMsg);
@@ -399,3 +403,42 @@ QList<QByteArray> AudioDb::getBlocksByOffset(qint64 offsetStart, int nBlocks) co
     }
     return blocks;
 }
+
+quint64 AudioDb::getBlockTimestamp(qint64 blockIndex) const {
+    if (!m_initialized) return 0;
+
+    QSqlQuery q(m_db);
+    q.prepare(R"(
+        SELECT timestamp
+          FROM audio_blocks
+         WHERE block_index = :idx
+    )");
+    q.bindValue(":idx", blockIndex);
+
+    if (!q.exec() || !q.next()) {
+        return 0;
+    }
+    return static_cast<quint64>(q.value(0).toLongLong());
+}
+
+qint64 AudioDb::getBlockSampleOffset(qint64 blockIndex) const {
+    if (!m_initialized) return 0;
+
+    QSqlQuery q(m_db);
+    q.prepare(R"(
+        SELECT sample_offset
+          FROM audio_blocks
+         WHERE block_index = :idx
+    )");
+    q.bindValue(":idx", blockIndex);
+
+    if (!q.exec()) {
+        logError("getBlockSampleOffset", q.lastError());
+        return 0;
+    }
+    if (!q.next()) {
+        return 0;
+    }
+    return q.value(0).toLongLong();
+}
+

@@ -8,23 +8,23 @@
 #include <gst/gstbus.h>
 #include <gst/app/gstappsink.h>
 
-class NetworkReceiver : public IReceiver
-{
+class NetworkReceiver : public IReceiver {
     Q_OBJECT
-
 public:
     explicit NetworkReceiver(QObject* parent = nullptr);
     ~NetworkReceiver() override;
+
+    void setConfig(const ReceiverConfig& cfg) override {
+        m_url = cfg.url;
+    }
 
     void setUrl(const QString& url);
     void start() override;
     void stop() override;
 
 signals:
-    void audioFormatDetected(const QAudioFormat& format);
-    void floatChunkReady(const QVector<float>& data, qint64 timestamp);
+    void floatChunkReady(const QVector<float>& floats, quint64 timestampNs);
     void streamFinished();
-    void errorOccurred(const QString& error);
 
 private slots:
     void processBusMessages();
