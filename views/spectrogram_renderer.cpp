@@ -350,17 +350,76 @@ void SpectrogramRenderer::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void SpectrogramRenderer::paintEvent(QPaintEvent* event) {
+    Q_UNUSED(event);
     QPainter painter(this);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, false); // Optimización
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+
+    // 1) Fondo negro
     painter.fillRect(rect(), Qt::black);
 
     QMutexLocker lock(&m_mutex);
     if (m_image.isNull()) return;
 
-    // Renderizado optimizado
-    QRect sourceRect(0, 0, m_image.width(), m_image.height());
-    painter.drawImage(rect(), m_image, sourceRect);
+    // 2) Márgenes para métricas
+    const int leftMargin   = 50;  // espacio para eje de frecuencia
+    const int bottomMargin = 20;  // espacio para eje de tiempo
+    int W = width(), H = height();
+    int drawW = W - leftMargin;
+    int drawH = H - bottomMargin;
+
+    // 3) Dibujar la imagen del espectrograma en el área central
+    QRect spectrogramRect(leftMargin, 0, drawW, drawH);
+    painter.drawImage(spectrogramRect, m_image);
+
+    // 4) Dibujar eje de frecuencia (izquierda)
+    painter.setPen(Qt::white);
+    QFontMetrics fm = painter.fontMetrics();
+    double maxFreq = m_cfg.sampleRate / 2.0;      // Nyquist
+    int freqTicks = 4;                            // 5 marcas: 0,1/4,1/2,3/4,1*Nyquist
+    for (int i = 0; i <= freqTicks; ++i) {
+        double t    = double(i) / freqTicks;             // 0→1
+        double freq = maxFreq * (freqTicks - i) / freqTicks;
+        int y       = int(t * drawH);
+        // Línea de marca
+        painter.drawLine(leftMargin - 5, y, leftMargin, y);
+        // Etiqueta en kHz
+        QString lbl = QString::number(freq/1000.0, 'f', 1) + " kHz";
+        painter.drawText(
+            QRect(0, y - fm.height()/2, leftMargin - 8, fm.height()),
+            Qt::AlignRight,
+            lbl
+            );
+    }
+
+    // 5) Dibujar eje de tiempo (abajo)
+    //    Cada columna corresponde a hopSize muestras:
+    double hopSize     = m_cfg.fftSize / 2.0;
+    double secPerCol   = hopSize / m_cfg.sampleRate;
+    int cols           = m_image.width();
+    double visDuration = cols * secPerCol;
+    int timeTicks      = 5; // 6 marcas incluyendo 0 y fin
+    for (int i = 0; i <= timeTicks; ++i) {
+        double t       = double(i) / timeTicks;
+        double tSec    = t * visDuration;
+        int x          = leftMargin + int(t * drawW);
+        // Línea de marca
+        painter.drawLine(x, drawH, x, drawH + 5);
+        // Etiqueta en segundos
+        QString lbl = QString::number(tSec, 'f', 1) + " s";
+        int tw = fm.horizontalAdvance(lbl);
+        painter.drawText(
+            x - tw/2, drawH + 5,
+            tw, fm.height(),
+            Qt::AlignHCenter|Qt::AlignTop,
+            lbl
+            );
+    }
+
+    // 6) Si quieres, dibuja un contorno alrededor
+    painter.setPen(QPen(Qt::white, 1));
+    painter.drawRect(spectrogramRect);
 }
+
 
 void SpectrogramRenderer::resizeEvent(QResizeEvent* event) {
     QMutexLocker lock(&m_mutex);

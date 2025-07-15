@@ -160,45 +160,70 @@ void WaveformRenderer::updateDisplay()
 
 void WaveformRenderer::paintEvent(QPaintEvent* event)
 {
+    Q_UNUSED(event);
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    // Obtener el área de dibujo completa
-    QRect drawRect = rect();
-
-    // Limpiar fondo con gradiente sutil estilo Audacity
-    drawAudacityBackground(painter, drawRect);
+    // 1) Fondo completo estilo Audacity
+    QRect fullRect = rect();
+    drawAudacityBackground(painter, fullRect);
 
     QMutexLocker locker(&m_mutex);
 
+    // 2) Si no hay datos, mostramos mensaje y salimos
     if (m_blocks.isEmpty()) {
-        // Mostrar texto de estado centrado con estilo Audacity
         painter.setPen(QColor(180, 180, 180));
-        QFont font = painter.font();
-        font.setPointSize(10);
-        painter.setFont(font);
-        painter.drawText(drawRect, Qt::AlignCenter, "Esperando datos de audio...");
+        QFont f = painter.font();
+        f.setPointSize(10);
+        painter.setFont(f);
+        painter.drawText(fullRect, Qt::AlignCenter,
+                         tr("Esperando datos de audio..."));
         return;
     }
 
-    // Calcular dimensiones usando el área completa
-    int height = drawRect.height();
-    int width = drawRect.width();
+    // 3) Definir margen izquierdo para la escala lineal
+    const int marginLeft = 40;
+    int fullW = fullRect.width();
+    int fullH = fullRect.height();
+    int wfW   = fullW - marginLeft;
+    int wfH   = fullH;
+    QRect waveformRect(fullRect.left() + marginLeft,
+                       fullRect.top(),
+                       wfW, wfH);
 
-    // Verificar que tenemos espacio suficiente
-    if (width <= 0 || height <= 0) {
-        return;
+    // 4) Dibujar escala vertical lineal
+    painter.setPen(Qt::white);
+    QFontMetrics fm(painter.font());
+    int ticks = 4;  // 5 líneas: +1, +0.5, 0, -0.5, -1
+    for (int i = 0; i <= ticks; ++i) {
+        float norm = 1.0f - 2.0f * (float(i) / ticks);  // de 1 a -1
+        int y = waveformRect.top()
+                + int(((1.0f - norm) / 2.0f) * wfH);
+        // Marca pequeña
+        painter.drawLine(waveformRect.left() - 5, y,
+                         waveformRect.left() - 1, y);
+        // Etiqueta lineal
+        QString linLabel = QString::number(norm, 'f', 1);
+        painter.drawText(QRect(0, y - fm.height()/2,
+                               marginLeft - 8, fm.height()),
+                         Qt::AlignRight, linLabel);
     }
 
-    // Renderizar waveform estilo Audacity
-    drawAudacityWaveform(painter, height, width);
+    // 5) Dibujar la waveform en el área restante
+    painter.save();
+    painter.translate(waveformRect.topLeft());
+    painter.setClipRect(0, 0, wfW, wfH);
+    drawAudacityWaveform(painter, wfH, wfW);
+    painter.restore();
 
-    // Dibujar línea central más sutil
-    painter.setPen(QPen(QColor(100, 100, 100), 1));
-    painter.drawLine(drawRect.left(), height / 2, drawRect.right(), height / 2);
+    // 6) Línea central horizontal
+    painter.setPen(QPen(QColor(100,100,100), 1));
+    int centerY = waveformRect.top() + wfH / 2;
+    painter.drawLine(waveformRect.left(),  centerY,
+                     waveformRect.right(), centerY);
 
-    // Dibujar información de estado con estilo Audacity
-    drawStatusInfo(painter, drawRect);
+    // 7) Información de estado
+    drawStatusInfo(painter, fullRect);
 }
 
 void WaveformRenderer::resizeEvent(QResizeEvent* event)
@@ -235,7 +260,7 @@ void WaveformRenderer::wheelEvent(QWheelEvent* event)
 void WaveformRenderer::initializeForAudacityStyle()
 {
     // Configuración optimizada para estilo Audacity
-    m_config.maxVisibleBlocks = 2000;
+    m_config.maxVisibleBlocks = 400;
     m_config.blockWidth = 1;
     m_config.blockSpacing = 0;
 

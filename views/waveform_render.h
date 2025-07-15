@@ -30,7 +30,7 @@ struct WaveformBlock {
  * @brief Configuración para el renderizado del waveform
  */
 struct WaveformConfig {
-    int maxVisibleBlocks = 2000;    ///< Máximo de bloques visibles
+    int maxVisibleBlocks = 400;    ///< Máximo de bloques visibles
     int blockWidth = 1;             ///< Ancho de cada bloque en pixels
     int blockSpacing = 0;           ///< Espaciado entre bloques
     QColor peakColor = QColor(100, 149, 237);   ///< Color de los picos (azul Audacity)

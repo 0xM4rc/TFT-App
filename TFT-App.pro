@@ -16,33 +16,29 @@ PKGCONFIG += gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0
 # DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000
 
 SOURCES += \
-    audio_db.cpp \
-    audio_receiver.cpp \
-    dsp_worker.cpp \
+    core/audio_db.cpp \
+    receivers/audio_receiver.cpp \
+    core/dsp_worker.cpp \
     main.cpp \
     main_moc.cpp \
-    mainwindow.cpp \
-    network_receiver.cpp \
-    realtime_spectrogram.cpp \
-    spectrogram_calculator.cpp \
-    spectrogram_renderer.cpp \
-    waveform_render.cpp
+    gui/mainwindow.cpp \
+    receivers/network_receiver.cpp \
+    views/spectrogram_renderer.cpp \
+    views/waveform_render.cpp
     #tests/audio_processor_test.cpp \
 
 HEADERS += \
-    audio_db.h \
-    audio_receiver.h \
-    dsp_worker.h \
-    ireceiver.h \
-    libmodels/audio_block_model.h \
-    libmodels/peak_model.h \
-    libmodels/spectrogram_model.h \
-    mainwindow.h \
-    network_receiver.h \
-    realtime_spectrogram.h \
-    spectrogram_calculator.h \
-    spectrogram_renderer.h \
-    waveform_render.h
+    core/audio_db.h \
+    receivers/audio_receiver.h \
+    core/dsp_worker.h \
+    core/ireceiver.h \
+    models/audio_block_model.h \
+    models/peak_model.h \
+    models/spectrogram_model.h \
+    gui/mainwindow.h \
+    receivers/network_receiver.h \
+    views/spectrogram_renderer.h \
+    views/waveform_render.h
 
 FORMS += \
     mainwindow.ui
