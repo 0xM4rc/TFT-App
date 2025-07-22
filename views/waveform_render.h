@@ -1,7 +1,7 @@
 #ifndef WAVEFORM_RENDER_H
 #define WAVEFORM_RENDER_H
 
-#include "dsp_worker.h"
+#include "core/dsp_worker.h"
 #include <QWidget>
 #include <QVector>
 #include <QPainter>

@@ -3,7 +3,7 @@
 
 #include <QAbstractListModel>
 #include <QVector>
-#include "audio_db.h"
+#include "core/audio_db.h"
 
 /**
  * @brief Modelo para exponer registros de picos (min/max) de audio

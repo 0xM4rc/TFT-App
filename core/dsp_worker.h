@@ -1,6 +1,7 @@
 #ifndef DSP_WORKER_H
 #define DSP_WORKER_H
 
+#include "config/audio_configs.h"
 #include <QObject>
 #include <QVector>
 #include <QtTypes>
@@ -20,37 +21,6 @@ struct FrameData {
     QVector<float> spectrum;        ///< Espectro de frecuencias
     QVector<float> frequencies;     ///< Frecuencias correspondientes a cada bin
     float windowGain = 1.0f;        ///< Ganancia de la ventana aplicada
-};
-
-/**
- * @brief Configuración para el procesamiento DSP
- */
-struct DSPConfig {
-    int blockSize = 1024;       ///< Tamaño del bloque para procesamiento
-    int fftSize = 1024;         ///< Tamaño de la FFT para espectrograma
-    int sampleRate = 44100;     ///< Frecuencia de muestreo
-    bool enableSpectrum = true; ///< Habilitar cálculo de espectro
-    bool enablePeaks = true;    ///< Habilitar detección de picos
-    int waveformSize = 512;     ///< Tamaño del waveform para picos
-
-    // Configuración específica para espectrograma
-    int hopSize = 512;          ///< Tamaño del salto entre ventanas
-    int windowType = 1;         ///< Tipo de ventana (0=Rectangular, 1=Hann, etc.)
-    double kaiserBeta = 8.0;    ///< Parámetro beta para ventana Kaiser
-    double gaussianSigma = 0.4; ///< Parámetro sigma para ventana Gaussiana
-    bool logScale = true;       ///< Aplicar escala logarítmica (dB)
-    float noiseFloor = -100.0f; ///< Piso de ruido en dB
-
-    // Constructor por defecto
-    DSPConfig() = default;
-
-    // Constructor con parámetros básicos
-    DSPConfig(int blockSz, int fftSz, int sampleRt = 44100)
-        : blockSize(blockSz)
-        , fftSize(fftSz)
-        , sampleRate(sampleRt)
-        , hopSize(fftSz / 2)  // Hop size típico es la mitad del FFT size
-    {}
 };
 
 /**

@@ -12,38 +12,41 @@ AudioReceiver::~AudioReceiver() {
     stop();
 }
 
-void AudioReceiver::setConfig(const ReceiverConfig& cfg) {
-    // Solo permitimos cambiar config si no está corriendo
+void AudioReceiver::setConfig(const PhysicalInputConfig &cfg)
+{
     if (m_audioSource) {
-        qWarning() << "No se puede cambiar la configuración mientras la captura está activa";
+        qWarning() << "No se puede cambiar configuración mientras captura está activa";
         return;
     }
-    m_cfg.sampleRate         = cfg.sampleRate;
-    m_cfg.channelCount       = cfg.channelCount;
-    m_cfg.deviceName         = cfg.deviceId;
-    m_cfg.usePreferredFormat = cfg.usePreferred;
+    if (int err = cfg.isValid(); err != 0) {
+        qWarning() << "PhysicalInputConfig inválido, código" << err;
+        return;
+    }
+    m_cfg = cfg;
 }
 
-void AudioReceiver::start() {
+void AudioReceiver::start()
+{
     if (m_audioSource) {
         qDebug() << "AudioReceiver ya está iniciado";
         return;
     }
 
-    // 1) Selección y validación de dispositivo / formato
+    /* ---------- 1. Selección/validación ---------- */
     QAudioDevice dev = selectAudioDevice();
     if (dev.isNull()) {
         qWarning() << "AudioReceiver: no hay dispositivo de entrada";
         emit errorOccurred("No input audio device");
         return;
     }
+
     QAudioFormat fmt = setupAudioFormat(dev);
     if (!validateConfiguration(dev, fmt)) {
         if (m_cfg.fallbackToPreferred) {
-            qWarning() << "Usando formato preferido del dispositivo...";
+            qWarning() << "Usando formato preferido del dispositivo…";
             fmt = dev.preferredFormat();
             if (!validateConfiguration(dev, fmt)) {
-                qWarning() << "AudioReceiver: formato preferido tampoco soportado";
+                qWarning() << "Formato preferido tampoco soportado";
                 emit errorOccurred("Preferred audio format not supported");
                 return;
             }
@@ -53,21 +56,21 @@ void AudioReceiver::start() {
         }
     }
 
-    // 2) Crear fuente y dispositivo Qt
+    /* ---------- 2. Crear QAudioSource ---------- */
     m_audioSource = new QAudioSource(dev, fmt, this);
-    if (m_cfg.bufferSize > 0) {
+    if (m_cfg.bufferSize > 0)
         m_audioSource->setBufferSize(m_cfg.bufferSize);
-    }
+
     m_ioDevice = m_audioSource->start();
     if (!m_ioDevice) {
-        qWarning() << "AudioReceiver: fallo al iniciar captura";
+        qWarning() << "Fallo al iniciar captura";
         emit errorOccurred("Failed to start audio capture");
         delete m_audioSource;
         m_audioSource = nullptr;
         return;
     }
 
-    // 3) Guardar estado
+    /* ---------- 3. Estado y buffers ---------- */
     m_currentDevice = dev;
     m_currentFormat = fmt;
     int bps = (fmt.sampleFormat() == QAudioFormat::Int16) ? 2 : 4;
@@ -76,13 +79,14 @@ void AudioReceiver::start() {
                        : fmt.sampleRate() * fmt.channelCount() * bps;
     m_floatBuffer.reserve(maxBytes / bps);
 
-    // 4) Conectar lectura y arrancar
+    /* ---------- 4. readyRead ---------- */
     connect(m_ioDevice, &QIODevice::readyRead,
             this, &AudioReceiver::handleReadyRead);
 
-    qDebug() << "AudioReceiver iniciado:" << m_cfg.deviceName;
+    qDebug() << "AudioReceiver iniciado:" << m_cfg.deviceId;
     emit audioFormatDetected(fmt);
 }
+
 
 void AudioReceiver::stop() {
     if (!m_audioSource) return;
@@ -128,24 +132,24 @@ void AudioReceiver::handleReadyRead() {
     emit floatChunkReady(m_floatBuffer, timestampNs);
 }
 
-QAudioDevice AudioReceiver::selectAudioDevice() const {
-    if (m_cfg.deviceName.isEmpty()) {
+QAudioDevice AudioReceiver::selectAudioDevice() const
+{
+    if (m_cfg.deviceId.isEmpty())
         return QMediaDevices::defaultAudioInput();
-    }
-    for (const auto& dev : QMediaDevices::audioInputs()) {
-        if (dev.description() == m_cfg.deviceName
-            || dev.id() == m_cfg.deviceName.toUtf8()) {
+
+    for (const auto &dev : QMediaDevices::audioInputs()) {
+        if (dev.description() == m_cfg.deviceId || dev.id() == m_cfg.deviceId.toUtf8())
             return dev;
-        }
     }
-    qWarning() << "Dispositivo" << m_cfg.deviceName << "no encontrado, usando por defecto";
+    qWarning() << "Dispositivo" << m_cfg.deviceId << "no encontrado, usando por defecto";
     return QMediaDevices::defaultAudioInput();
 }
 
-QAudioFormat AudioReceiver::setupAudioFormat(const QAudioDevice& device) const {
-    if (m_cfg.usePreferredFormat) {
+QAudioFormat AudioReceiver::setupAudioFormat(const QAudioDevice &device) const
+{
+    if (m_cfg.usePreferred)
         return device.preferredFormat();
-    }
+
     QAudioFormat fmt;
     fmt.setSampleRate(m_cfg.sampleRate);
     fmt.setChannelCount(m_cfg.channelCount);

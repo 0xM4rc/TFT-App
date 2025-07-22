@@ -1,6 +1,7 @@
 #ifndef NETWORK_RECEIVER_H
 #define NETWORK_RECEIVER_H
 
+#include "config/audio_configs.h"
 #include "ireceiver.h"
 #include <QTimer>
 #include <QAudioFormat>
@@ -14,11 +15,14 @@ public:
     explicit NetworkReceiver(QObject* parent = nullptr);
     ~NetworkReceiver() override;
 
-    void setConfig(const ReceiverConfig& cfg) override {
-        m_url = cfg.url;
+    // Nuevo método para configuración específica
+    void setConfig(const NetworkInputConfig& config);
+
+    // Mantener compatibilidad con interfaz existente
+    void setUrl(const QString& url) {
+        m_config.url = url;
     }
 
-    void setUrl(const QString& url);
     void start() override;
     void stop() override;
 
@@ -35,16 +39,16 @@ private:
     void handleEos();
     gboolean handleBusMessage(GstMessage* msg);
     void cleanup();
-    QString createPipelineString(const QString& url);
+    QString createPipelineString();  // Ya no necesita parámetro
 
-    // Callbacks estáticos (NUEVOS)
+    // Callbacks estáticos
     static GstFlowReturn onNewSample(GstAppSink* sink, gpointer user);
     static void onEos(GstAppSink* sink, gpointer user);
     static gboolean onBusMessage(GstBus* bus, GstMessage* msg, gpointer user);
-    static void onPadAdded(GstElement* element, GstPad* pad, gpointer user);  // NUEVO
+    static void onPadAdded(GstElement* element, GstPad* pad, gpointer user);
 
     // Miembros privados
-    QString m_url;
+    NetworkInputConfig m_config;  // Usar el config struct
     bool m_isRunning = false;
 
     // GStreamer elements

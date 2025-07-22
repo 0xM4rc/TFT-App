@@ -4,7 +4,7 @@
 #include <QAbstractListModel>
 #include <QVector>
 #include <QtGlobal>
-#include "dsp_worker.h"  // define FrameData
+#include "core/dsp_worker.h"  // define FrameData
 
 /**
  * @brief Modelo para exponer frames de espectrograma generados por DSPWorker

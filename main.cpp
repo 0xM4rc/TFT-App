@@ -7,7 +7,8 @@
 #include <QPixmap>
 #include <QTimer>
 #include <QDebug>
-#include "mainwindow.h"
+#include "gui/mainwindow.h"
+#include "core/controller.h"
 
 int main(int argc, char *argv[])
 {
@@ -99,6 +100,28 @@ int main(int argc, char *argv[])
     qDebug() << "Qt version:" << QT_VERSION_STR;
     qDebug() << "Application directory:" << app.applicationDirPath();
     qDebug() << "Config directory:" << configDir;
+
+    ///////////////////////////////////////////////
+    /// Creación bd
+    ///////////////////////////////////////////////
+
+    // 1) Determina la ruta de la base de datos
+    QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(dataDir);
+    QString dbPath = dataDir + "/audio_capture.sqlite";
+
+    // 2) Crea y abre la BD
+    auto* db = new AudioDb(dbPath, &app);
+    if (!db->initialize()) {
+        qCritical() << "No se pudo inicializar AudioDb. Saliendo.";
+        return -1;
+    }
+
+    ///////////////////////////////////////////////
+    /// Iniciación componentes clave
+    ///////////////////////////////////////////////
+
+    auto* ctrl   = new Controller(db);
 
     int result = app.exec();
 

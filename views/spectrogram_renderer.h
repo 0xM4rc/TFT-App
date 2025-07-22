@@ -8,7 +8,7 @@
 #include <QImage>
 #include <QRect>
 #include <memory>
-#include "dsp_worker.h"
+#include "core/dsp_worker.h"
 
 struct SpectrogramConfig {
     int    fftSize        = 1024;      // debe coincidir con DSPConfig.fftSize

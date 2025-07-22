@@ -29,11 +29,11 @@
 #include <QSettings>
 #include <QCloseEvent>
 
-#include "audio_db.h"
-#include "dsp_worker.h"
-#include "network_receiver.h"
-#include "waveform_render.h"
-#include "spectrogram_renderer.h"
+#include "core/audio_db.h"
+#include "core/dsp_worker.h"
+#include "receivers/network_receiver.h"
+#include "views/waveform_render.h"
+#include "views/spectrogram_renderer.h"
 
 QT_BEGIN_NAMESPACE
 class QSplitter;

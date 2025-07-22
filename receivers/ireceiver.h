@@ -1,6 +1,7 @@
 #ifndef IRECEIVER_H
 #define IRECEIVER_H
 
+#include "config/audio_configs.h"
 #include <QObject>
 #include <QVector>
 #include <QDateTime>
@@ -8,15 +9,7 @@
 #include <QString>
 
 // Configuración genérica
-struct ReceiverConfig {
-    enum Type { Network, Audio } type;
-    QString url;              // Para Network
-    // Para Audio
-    int sampleRate    = 44100;
-    int channelCount  = 1;
-    QString deviceId;
-    bool usePreferred = false;
-};
+
 
 class IReceiver : public QObject {
     Q_OBJECT
@@ -24,8 +17,6 @@ public:
     explicit IReceiver(QObject* parent = nullptr) : QObject(parent) {}
     ~IReceiver() override {}
 
-    // Configuración
-    virtual void setConfig(const ReceiverConfig& cfg) = 0;
     // Control de flujo
 public slots:
     virtual void start() = 0;

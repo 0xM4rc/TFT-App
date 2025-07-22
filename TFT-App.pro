@@ -17,8 +17,11 @@ PKGCONFIG += gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0
 
 SOURCES += \
     core/audio_db.cpp \
+    core/controller.cpp \
+    models/audio_block_model.cpp \
     receivers/audio_receiver.cpp \
     core/dsp_worker.cpp \
+    core/spectrogram_calculator.cpp \
     main.cpp \
     main_moc.cpp \
     gui/mainwindow.cpp \
@@ -28,11 +31,14 @@ SOURCES += \
     #tests/audio_processor_test.cpp \
 
 HEADERS += \
+    config/audio_configs.h \
     core/audio_db.h \
+    core/controller.h \
+    models/audio_block_model.h \
     receivers/audio_receiver.h \
     core/dsp_worker.h \
-    core/ireceiver.h \
-    models/audio_block_model.h \
+    core/spectrogram_calculator.h \
+    receivers/ireceiver.h \
     models/peak_model.h \
     models/spectrogram_model.h \
     gui/mainwindow.h \

@@ -9,51 +9,36 @@
 #include <QIODevice>
 #include <QDateTime>
 
-// Reutilizamos ReceiverConfig para configuración unificada
-struct ReceiverConfig;
-
 class AudioReceiver : public IReceiver {
     Q_OBJECT
 public:
-    explicit AudioReceiver(QObject* parent = nullptr);
+    explicit AudioReceiver(QObject *parent = nullptr);
     ~AudioReceiver() override;
 
-    // Configuración unificada
-    void setConfig(const ReceiverConfig& cfg) override;
+    /* --- configuración --- */
+    void setConfig(const PhysicalInputConfig &cfg);
+    QAudioDevice selectAudioDevice() const;
+    QAudioFormat setupAudioFormat(const QAudioDevice &device) const;
+    bool validateConfiguration(const QAudioDevice& device,
+                                const QAudioFormat& format) const;
 
 public slots:
     void start() override;
-    void stop() override;
-
-signals:
-    // IReceiver ya define chunkReady, errorOccurred, finished, audioFormatDetected
+    void stop()  override;
 
 private slots:
     void handleReadyRead();
 
 private:
-    // Métodos auxiliares
-    QAudioDevice selectAudioDevice() const;
-    QAudioFormat setupAudioFormat(const QAudioDevice& device) const;
-    bool validateConfiguration(const QAudioDevice& device, const QAudioFormat& format) const;
+    PhysicalInputConfig m_cfg;
 
-    // Configuración interna adaptada de ReceiverConfig
-    struct AudioConfig {
-        int sampleRate = 44100;
-        int channelCount = 1;
-        QAudioFormat::SampleFormat sampleFormat = QAudioFormat::Float;
-        QString deviceName;
-        bool usePreferredFormat = false;
-        int bufferSize = 4096;
-        bool fallbackToPreferred = true;
-    } m_cfg;
-
-    // Estado runtime
-    QAudioSource* m_audioSource = nullptr;
-    QIODevice*    m_ioDevice    = nullptr;
+    QAudioSource *m_audioSource = nullptr;
+    QIODevice    *m_ioDevice    = nullptr;
     QAudioFormat  m_currentFormat;
     QAudioDevice  m_currentDevice;
     QVector<float> m_floatBuffer;
+
+
 };
 
 #endif // AUDIO_RECEIVER_H

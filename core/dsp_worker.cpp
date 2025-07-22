@@ -419,16 +419,6 @@ void DSPWorker::updateSpectrogramConfig() {
     }
 }
 
-// Métodos legacy mantenidos para compatibilidad
-void DSPWorker::handleBlock(const QVector<float>& block, qint64 timestamp) {
-    // Método mantenido para compatibilidad, pero ya no se usa
-    // Todo el procesamiento se hace ahora en processBlock
-}
-
-void DSPWorker::calculateSpectrum(const QVector<float>& block, qint64 timestamp) {
-    // Método mantenido para compatibilidad, pero ya no se usa
-    // Todo el procesamiento se hace ahora en processBlock
-}
 
 QVector<float> DSPWorker::calculateSpectrum(const QVector<float>& block) {
     // Método legacy para compatibilidad

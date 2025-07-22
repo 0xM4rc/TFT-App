@@ -1,7 +1,7 @@
-#include "network_receiver.h"
+#include "receivers/network_receiver.h"
+#include "config/audio_configs.h"
 #include <QDebug>
 #include <QDateTime>
-#include <cstring>
 
 NetworkReceiver::NetworkReceiver(QObject* parent)
     : IReceiver(parent)
@@ -13,7 +13,8 @@ NetworkReceiver::NetworkReceiver(QObject* parent)
     }
 
     m_busTimer = new QTimer(this);
-    m_busTimer->setInterval(50);
+    // Usar configuración por defecto inicialmente
+    m_busTimer->setInterval(m_config.busTimerInterval);
     connect(m_busTimer, &QTimer::timeout,
             this,       &NetworkReceiver::processBusMessages);
 }
@@ -22,13 +23,48 @@ NetworkReceiver::~NetworkReceiver() {
     stop();
 }
 
-void NetworkReceiver::setUrl(const QString& url) {
-    m_url = url;
+void NetworkReceiver::setConfig(const NetworkInputConfig& config) {
+    // Validar configuración antes de asignarla
+    auto validation = const_cast<NetworkInputConfig&>(config).validate(true);
+
+    if (!validation.ok) {
+        qCritical() << "Configuración inválida:";
+        for (const QString& error : validation.errors) {
+            qCritical() << "  Error:" << error;
+        }
+        return;
+    }
+
+    // Mostrar warnings si los hay
+    if (!validation.warnings.isEmpty()) {
+        qWarning() << "Advertencias de configuración:";
+        for (const QString& warning : validation.warnings) {
+            qWarning() << "  " << warning;
+        }
+    }
+
+    if (validation.adjusted) {
+        qDebug() << "Configuración ajustada automáticamente";
+    }
+
+    m_config = config;
+
+    // Actualizar timer si cambió el intervalo
+    m_busTimer->setInterval(m_config.busTimerInterval);
+
+    if (m_config.enableDebugOutput) {
+        qDebug() << "Nueva configuración aplicada:";
+        qDebug() << "  URL:" << m_config.url;
+        qDebug() << "  Max buffers:" << m_config.maxBuffers;
+        qDebug() << "  Bus timer interval:" << m_config.busTimerInterval;
+        qDebug() << "  Target sample rate:" << m_config.targetSampleRate;
+        qDebug() << "  Target channels:" << m_config.targetChannels;
+    }
 }
 
 void NetworkReceiver::start() {
-    if (m_url.isEmpty()) {
-        qWarning() << "URL no especificada";
+    if (m_config.url.isEmpty()) {
+        qWarning() << "URL no especificada en configuración";
         return;
     }
     if (m_isRunning) {
@@ -36,17 +72,14 @@ void NetworkReceiver::start() {
         return;
     }
 
-    // 1) Pipeline sin caps fijas: dejaremos que decodebin entregue cualquier raw audio
-    QString pipelineStr = QString(
-                              "souphttpsrc location=%1 ! "
-                              "decodebin name=decoder ! "
-                              "audioconvert ! audioresample ! "
-                              "appsink name=sink emit-signals=true sync=false max-buffers=10 drop=true"
-                              ).arg(m_url);
+    // Usar el método del config para generar el pipeline
+    QString pipelineStr = m_config.getPipelineString();
 
-    qDebug() << "Pipeline GStreamer:" << pipelineStr;
+    if (m_config.enableDebugOutput) {
+        qDebug() << "Pipeline GStreamer:" << pipelineStr;
+    }
 
-    // 2) Crear pipeline
+    // Crear pipeline
     GError* err = nullptr;
     m_pipeline = gst_parse_launch(pipelineStr.toUtf8().constData(), &err);
     if (!m_pipeline || err) {
@@ -56,15 +89,20 @@ void NetworkReceiver::start() {
         return;
     }
 
-    // 3) Obtener appsink y callbacks (igual que antes)
+    // Obtener appsink y configurar callbacks
     m_appsink = GST_APP_SINK(gst_bin_get_by_name(GST_BIN(m_pipeline), "sink"));
-    if (!m_appsink) { qCritical() << "No se pudo obtener el appsink"; cleanup(); return; }
+    if (!m_appsink) {
+        qCritical() << "No se pudo obtener el appsink";
+        cleanup();
+        return;
+    }
+
     GstAppSinkCallbacks callbacks = {};
     callbacks.new_sample = onNewSample;
     callbacks.eos        = onEos;
     gst_app_sink_set_callbacks(m_appsink, &callbacks, this, nullptr);
 
-    // 4) Bus y decodebin pad-added (igual que antes)
+    // Bus y decodebin pad-added
     m_bus = gst_element_get_bus(m_pipeline);
     GstElement* decoder = gst_bin_get_by_name(GST_BIN(m_pipeline), "decoder");
     if (decoder) {
@@ -72,18 +110,20 @@ void NetworkReceiver::start() {
         gst_object_unref(decoder);
     }
 
-    // 5) PLAYING
+    // PLAYING
     if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         qCritical() << "No se pudo cambiar el pipeline a PLAYING";
         cleanup();
         return;
     }
 
-    // 6) Iniciar timer y marcar running
+    // Iniciar timer y marcar running
     m_busTimer->start();
     m_isRunning = true;
 
-    qDebug() << "NetworkReceiver arrancado correctamente";
+    if (m_config.enableDebugOutput) {
+        qDebug() << "NetworkReceiver arrancado correctamente";
+    }
 }
 
 void NetworkReceiver::stop() {
@@ -97,14 +137,14 @@ void NetworkReceiver::stop() {
     cleanup();
 }
 
-QString NetworkReceiver::createPipelineString(const QString& url) {
-    // Ya inyectado directamente en start()
-    return QString();
+QString NetworkReceiver::createPipelineString() {
+    // Ahora delegamos al método del config
+    return m_config.getPipelineString();
 }
 
 void NetworkReceiver::cleanup() {
     if (m_appsink) {
-        // “anulamos” los callbacks de forma válida
+        // "anulamos" los callbacks de forma válida
         GstAppSinkCallbacks emptyCb = { nullptr, nullptr, nullptr };
         gst_app_sink_set_callbacks(GST_APP_SINK(m_appsink),
                                    &emptyCb,
@@ -126,7 +166,6 @@ void NetworkReceiver::cleanup() {
 
     m_isRunning = false;
 }
-
 
 void NetworkReceiver::processBusMessages() {
     if (!m_isRunning || !m_bus) return;
@@ -225,12 +264,14 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
     }
     double freqHz = 1.0 / durSec;
 
-    // 8) Debug output: block size, rate, duration, frequency
-    qDebug() << QString("Buffer de %1 muestras a %2 Hz → %.3f s → freq ≈ %.1f Hz")
-                    .arg(sampleCount)
-                    .arg(rate)
-                    .arg(durSec, 0, 'f', 3)
-                    .arg(freqHz, 0, 'f', 1);
+    // 8) Debug output: usar configuración para decidir si mostrar
+    if (m_config.logBufferStats) {
+        qDebug() << QString("Buffer de %1 muestras a %2 Hz → %.3f s → freq ≈ %.1f Hz")
+                        .arg(sampleCount)
+                        .arg(rate)
+                        .arg(durSec, 0, 'f', 3)
+                        .arg(freqHz, 0, 'f', 1);
+    }
 
     // 9) Convert to floats
     QVector<float> floats(sampleCount);
@@ -258,10 +299,10 @@ GstFlowReturn NetworkReceiver::handleNewSample(GstAppSink* appsink) {
     return GST_FLOW_OK;
 }
 
-
-
 void NetworkReceiver::handleEos() {
-    qDebug() << "End of stream";
+    if (m_config.enableDebugOutput) {
+        qDebug() << "End of stream";
+    }
     QMetaObject::invokeMethod(this, [this](){
         if (m_isRunning) emit streamFinished();
     }, Qt::QueuedConnection);
@@ -280,7 +321,7 @@ gboolean NetworkReceiver::handleBusMessage(GstMessage* msg) {
         QString debugMsg = debug ? QString::fromUtf8(debug) : "";
 
         qCritical() << "GStreamer error:" << errorMsg;
-        if (!debugMsg.isEmpty()) {
+        if (!debugMsg.isEmpty() && m_config.enableDebugOutput) {
             qDebug() << "Debug info:" << debugMsg;
         }
 
@@ -297,17 +338,21 @@ gboolean NetworkReceiver::handleBusMessage(GstMessage* msg) {
         break;
     }
     case GST_MESSAGE_EOS:
-        qDebug() << "End of stream alcanzado";
+        if (m_config.enableDebugOutput) {
+            qDebug() << "End of stream alcanzado";
+        }
         handleEos();
         break;
     case GST_MESSAGE_STATE_CHANGED: {
-        GstState old_state, new_state, pending_state;
-        gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
+        if (m_config.enableDebugOutput) {
+            GstState old_state, new_state, pending_state;
+            gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
 
-        if (GST_MESSAGE_SRC(msg) == GST_OBJECT(m_pipeline)) {
-            qDebug() << "Pipeline cambió de estado:"
-                     << gst_element_state_get_name(old_state) << "->"
-                     << gst_element_state_get_name(new_state);
+            if (GST_MESSAGE_SRC(msg) == GST_OBJECT(m_pipeline)) {
+                qDebug() << "Pipeline cambió de estado:"
+                         << gst_element_state_get_name(old_state) << "->"
+                         << gst_element_state_get_name(new_state);
+            }
         }
         break;
     }
