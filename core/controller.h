@@ -6,6 +6,7 @@
 #include "receivers/ireceiver.h"
 #include <QObject>
 
+class AudioDb;
 class Controller : public QObject
 {
     Q_OBJECT
@@ -22,12 +23,14 @@ public:
     enum AudioSource { PhysicalAudioInput, NetworkAudioInput };
     Q_ENUM(AudioSource)
 
-    explicit Controller(AudioDb* db, QObject *parent = nullptr);
+    explicit Controller(QObject *parent = nullptr);
     ~Controller() override;
 
     // getters
     AudioSource audioSource() const { return m_source; }
     bool        isCapturing() const { return m_capturing; }
+    void setRotateDbPerSession(bool on);
+    bool rotateDbPerSession() const { return m_rotateDbPerSession; }
 
 public slots:
     void setAudioSource(AudioSource src);
@@ -56,12 +59,16 @@ signals:
                       qint64 samplesProcessed,
                       int bufferSize);
 
-private:
-    AudioDb* m_db;
+    void databaseChanged(const QString& path);
 
-    void createReceiver();
+private:
+    AudioDb*   m_db        = nullptr;
+
+    bool createReceiver();
     void cleanupReceiver();
     void applyConfigToCurrentReceiver();
+    void setupDatabase();
+    QString makeRandomDbPath();
 
     AudioSource   m_source { PhysicalAudioInput };
     IReceiver*    m_receiver { nullptr };
@@ -74,11 +81,14 @@ private:
     QThread*     m_dspThread    = nullptr;
 
     // Control del DSPWorker
-    void createDspWorker();
+    bool createDspWorker();
     void cleanupDspWorker();
 
     DSPWorker*   m_dspWorker    = nullptr;
     DSPConfig    m_dspConfig;
+
+    bool    m_rotateDbPerSession = true;
+    QString m_currentDbPath;
 };
 
 #endif // CONTROLLER_H

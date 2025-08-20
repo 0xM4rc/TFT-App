@@ -18,6 +18,7 @@ PKGCONFIG += gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0
 SOURCES += \
     core/audio_db.cpp \
     core/controller.cpp \
+    core/realtime_data_service.cpp \
     models/audio_block_model.cpp \
     receivers/audio_receiver.cpp \
     core/dsp_worker.cpp \
@@ -34,6 +35,7 @@ HEADERS += \
     config/audio_configs.h \
     core/audio_db.h \
     core/controller.h \
+    core/realtime_data_service.h \
     models/audio_block_model.h \
     receivers/audio_receiver.h \
     core/dsp_worker.h \

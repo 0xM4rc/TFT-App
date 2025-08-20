@@ -35,6 +35,8 @@ public:
     /** Inicializa la base de datos y crea las tablas necesarias */
     bool initialize();
 
+    void shutdown();
+
     /** Borra todos los datos y reinicia contadores */
     bool clearDatabase();
 

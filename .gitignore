@@ -84,3 +84,5 @@ test_long_capture.db
 audio_capture.db
 
 tests/build
+
+Backup_files

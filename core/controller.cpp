@@ -5,10 +5,14 @@
 #include "receivers/network_receiver.h"
 #include <QThread>
 #include <QMetaObject>
+#include "core/audio_db.h"
+#include <QDir>
+#include <QUuid>
+#include <QCoreApplication>
 
-Controller::Controller(AudioDb* db, QObject *parent)
+
+Controller::Controller(QObject *parent)
     : QObject(parent)
-    , m_db(db)
 {
 }
 
@@ -66,19 +70,28 @@ void Controller::startCapture()
     if (m_capturing)
         return;
 
-    // 1) Crear y arrancar el receiver
-    createReceiver();
-    if (!m_receiver)
+    // 1) (Re)crear receiver en su hilo
+    if (!createReceiver()) {
+        emit errorOccurred("No se pudo crear el receptor de audio");
         return;
+    }
 
-    // 2) Crear y arrancar el DSPWorker
-    createDspWorker();
+    // 2) Rotar/crear DB (no inicializar aquí)
+    setupDatabase();  // esto aplicará la lógica m_rotateDbPerSession y emitirá databaseChanged(path)
 
-    // 3) Conectar señal de audio -> DSP
+    // 3) Crear DSPWorker + mover DB al hilo DSP + initialize() en SU hilo
+    if (!createDspWorker()) {       // haz que devuelva bool: false si initialize() falla
+        cleanupReceiver();
+        emit errorOccurred("No se pudo inicializar el DSP/DB");
+        return;
+    }
+
+    // 4) Conectar receiver -> DSP (audio crudo a procesamiento)
     connect(m_receiver, &IReceiver::floatChunkReady,
-            m_dspWorker, &DSPWorker::processChunk, Qt::QueuedConnection);
+            m_dspWorker, &DSPWorker::processChunk,
+            Qt::QueuedConnection);
 
-    // 4) Conectar señales de receiver -> Controller
+    // 5) Conectar eventos del receiver hacia Controller (opcional re-emisión)
     connect(m_receiver, &IReceiver::floatChunkReady,
             this, &Controller::floatChunkReady, Qt::QueuedConnection);
     connect(m_receiver, &IReceiver::audioFormatDetected,
@@ -88,14 +101,13 @@ void Controller::startCapture()
     connect(m_receiver, &IReceiver::finished,
             this, &Controller::finished, Qt::QueuedConnection);
 
-    // 5) Conectar señales de DSP -> Controller (ya hechas en createDspWorker)
-
     // 6) Arrancar captura en el hilo del receiver
     QMetaObject::invokeMethod(m_receiver, "start", Qt::QueuedConnection);
 
     m_capturing = true;
     emit capturingChanged(true);
 }
+
 
 void Controller::stopCapture()
 {
@@ -116,10 +128,10 @@ void Controller::stopCapture()
     emit capturingChanged(false);
 }
 
-void Controller::createReceiver()
+bool Controller::createReceiver()
 {
     if (m_receiver)
-        return;
+        return true; // ya creado, no hay error
 
     m_captureThread = new QThread(this);
 
@@ -130,13 +142,16 @@ void Controller::createReceiver()
     case NetworkAudioInput:
         m_receiver = new NetworkReceiver;
         break;
+    default:
+        m_receiver = nullptr;
+        break;
     }
 
     if (!m_receiver) {
         emit errorOccurred("No se pudo crear el receptor de audio");
         m_captureThread->deleteLater();
         m_captureThread = nullptr;
-        return;
+        return false;
     }
 
     m_receiver->moveToThread(m_captureThread);
@@ -144,7 +159,10 @@ void Controller::createReceiver()
             m_receiver, &QObject::deleteLater);
 
     m_captureThread->start();
+
+    return true;
 }
+
 
 void Controller::cleanupReceiver()
 {
@@ -164,28 +182,87 @@ void Controller::cleanupReceiver()
     m_captureThread = nullptr;
 }
 
-void Controller::createDspWorker()
+void Controller::setupDatabase()
+{
+    if (m_rotateDbPerSession) {
+        // Si ya había una DB previa, la eliminamos correctamente
+        if (m_db) {
+            m_db->deleteLater();
+            m_db = nullptr;
+        }
+        m_currentDbPath = makeRandomDbPath();
+        m_db = new AudioDb(m_currentDbPath); // sin parent: la moveremos de hilo
+        emit databaseChanged(m_currentDbPath);
+
+    } else {
+        // Ruta persistente: solo crear si aún no existe instancia
+        if (!m_db) {
+            m_currentDbPath = QCoreApplication::applicationDirPath() + "/audio_capture.db";
+            m_db = new AudioDb(m_currentDbPath);
+            emit databaseChanged(m_currentDbPath);
+        }
+    }
+}
+
+
+bool Controller::createDspWorker()
 {
     if (m_dspWorker)
-        return;
+        return true; // ya existe, no hay error
 
-    m_dspWorker = new DSPWorker(m_dspConfig, m_db);
     m_dspThread = new QThread(this);
 
-    m_dspWorker->moveToThread(m_dspThread);
-    connect(m_dspThread, &QThread::finished,
-            m_dspWorker, &QObject::deleteLater);
+    // mover DB al hilo DSP
+    if (!m_db) {
+        setupDatabase();
+    }
+    if (!m_db) {
+        qCritical() << "Controller: No se pudo crear la base de datos";
+        return false;
+    }
+    m_db->moveToThread(m_dspThread);
 
-    // Re-emisión de eventos DSP -> Controller
-    connect(m_dspWorker, &DSPWorker::framesReady,
-            this, &Controller::framesReady, Qt::QueuedConnection);
-    connect(m_dspWorker, &DSPWorker::statsUpdated,
-            this, &Controller::statsUpdated, Qt::QueuedConnection);
-    connect(m_dspWorker, &DSPWorker::errorOccurred,
-            this, &Controller::errorOccurred, Qt::QueuedConnection);
+    m_dspWorker = new DSPWorker(m_dspConfig, m_db);
+    if (!m_dspWorker) {
+        qCritical() << "Controller: No se pudo crear el DSPWorker";
+        m_db->moveToThread(QCoreApplication::instance()->thread()); // devolver DB al hilo principal
+        return false;
+    }
+    m_dspWorker->moveToThread(m_dspThread);
+
+    connect(m_dspThread, &QThread::finished, m_dspWorker, &QObject::deleteLater);
+    connect(m_dspThread, &QThread::finished, m_db,        &QObject::deleteLater);
+
+    // señales DSP -> Controller
+    connect(m_dspWorker, &DSPWorker::framesReady,  this, &Controller::framesReady,  Qt::QueuedConnection);
+    connect(m_dspWorker, &DSPWorker::statsUpdated, this, &Controller::statsUpdated, Qt::QueuedConnection);
+    connect(m_dspWorker, &DSPWorker::errorOccurred,this, &Controller::errorOccurred,Qt::QueuedConnection);
 
     m_dspThread->start();
+
+    bool ok = false;
+    QMetaObject::invokeMethod(m_db, [&](){
+        ok = m_db->initialize();
+    }, Qt::BlockingQueuedConnection);
+
+    if (!ok) {
+        qCritical() << "Controller: No se pudo abrir la base de datos";
+        m_dspThread->quit();
+        m_dspThread->wait();
+        m_dspThread->deleteLater();
+        m_dspThread = nullptr;
+
+        m_dspWorker->deleteLater();
+        m_dspWorker = nullptr;
+
+        m_db->deleteLater();
+        m_db = nullptr;
+        return false;
+    }
+
+    return true;
 }
+
 
 void Controller::cleanupDspWorker()
 {
@@ -193,15 +270,43 @@ void Controller::cleanupDspWorker()
         return;
 
     // Flush y reset bloqueante
-    QMetaObject::invokeMethod(m_dspWorker, "flushResidual",      Qt::BlockingQueuedConnection);
-    QMetaObject::invokeMethod(m_dspWorker, "reset",              Qt::BlockingQueuedConnection);
+    QMetaObject::invokeMethod(m_dspWorker, "flushResidual", Qt::BlockingQueuedConnection);
+    QMetaObject::invokeMethod(m_dspWorker, "reset",         Qt::BlockingQueuedConnection);
+
+    // Cerrar conexión SQLite EN SU HILO
+    if (m_db) {
+        QMetaObject::invokeMethod(m_db, "shutdown", Qt::BlockingQueuedConnection);
+    }
 
     m_dspWorker->disconnect(this);
 
     m_dspThread->quit();
     m_dspThread->wait();
-    m_dspThread->deleteLater();
 
+    // destruir objetos que viven en el hilo DSP
+    if (m_db)        { m_db->deleteLater();        m_db = nullptr; }
+    if (m_dspThread) { m_dspThread->deleteLater(); m_dspThread = nullptr; }
     m_dspWorker = nullptr;
-    m_dspThread = nullptr;
+
+    // limpiar estado de sesión y notificar a la UI
+    m_currentDbPath.clear();
+    emit databaseChanged(QString());
+}
+
+
+// Utils
+QString Controller::makeRandomDbPath()
+{
+    QDir baseDir(QCoreApplication::applicationDirPath());
+    if (!baseDir.exists("tmp")) {
+        baseDir.mkdir("tmp");
+    }
+    QString uniqueName = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QString fileName = uniqueName + ".db";
+    QString fullPath = baseDir.filePath("tmp/" + fileName);
+    return fullPath;
+}
+
+void Controller::setRotateDbPerSession(bool on) {
+    m_rotateDbPerSession = on;
 }

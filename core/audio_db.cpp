@@ -442,3 +442,18 @@ qint64 AudioDb::getBlockSampleOffset(qint64 blockIndex) const {
     return q.value(0).toLongLong();
 }
 
+void AudioDb::shutdown() {
+    if (!m_db.isValid())
+        return;
+
+    if (m_db.isOpen())
+        m_db.close();
+
+    const QString name = m_db.connectionName();
+
+    // Romper la última referencia ANTES de removeDatabase
+    m_db = QSqlDatabase();
+
+    // IMPORTANTÍSIMO: no debe quedar vivo ningún QSqlQuery asociado a 'name'
+    QSqlDatabase::removeDatabase(name);
+}

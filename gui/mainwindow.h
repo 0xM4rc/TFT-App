@@ -39,6 +39,7 @@ QT_BEGIN_NAMESPACE
 class QSplitter;
 class QTabWidget;
 class QGroupBox;
+class Controller;
 QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow
@@ -86,6 +87,8 @@ private slots:
     void resetToDefaults();
 
 private:
+    Controller* m_ctrl = nullptr;
+
     void initializeComponents();
     void setupUi();
     void setupMenuBar();

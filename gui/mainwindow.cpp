@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDebug>
+#include "core/controller.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -18,6 +19,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_isStreaming(false)
     , m_isPaused(false)
     , m_settings(new QSettings("AudioAnalyzer", "MainApp", this))
+    , m_ctrl(new Controller(this))
 {
     setupUi();
     setupConnections();
@@ -531,50 +533,30 @@ void MainWindow::setupConnections()
 
 void MainWindow::initializeComponents()
 {
-    // Initialize database
-    QString dbPath = m_dbPathEdit->text();
-    QDir dir(QFileInfo(dbPath).absolutePath());
-    if (!dir.exists()) dir.mkpath(".");
+    m_ctrl->setRotateDbPerSession(true);
 
-    m_audioDb = new AudioDb(dbPath, this);
-    if (!m_audioDb->initialize()) {
-        QMessageBox::critical(this, "Database Error",
-                              "Failed to initialize database at: " + dbPath);
-        return;
-    }
+    QObject::connect(m_ctrl, &Controller::databaseChanged, [](const QString &path){
+        qDebug() << "[MAINWINDOW] DB:" << (path.isEmpty() ? "<none>" : path);
+    });
+    QObject::connect(m_ctrl, &Controller::errorOccurred, [](const QString &err){
+        qWarning() << "[MAINWINDOW] ERROR:" << err;
+    });
+    QObject::connect(m_ctrl, &Controller::framesReady, [](const QVector<FrameData> &frames){
+        qDebug() << "[MAINWINDOW] Frames:" << frames.size();
+    });
 
-    // Initialize DSP Worker
-    m_dspConfig.blockSize = m_blockSizeSpin->value();
-    m_dspConfig.fftSize = m_fftSizeSpin->value();
-    m_dspConfig.sampleRate = m_sampleRateSpin->value();
-    m_dspConfig.enableSpectrum = m_enableSpectrumCheck->isChecked();
-    m_dspConfig.enablePeaks = m_enablePeaksCheck->isChecked();
+    // TODO: Poner valores por defecto, en el start se debería recopilar las configuraciones
+    // para iniciar captura
 
-    m_dspWorker = new DSPWorker(m_dspConfig, m_audioDb, this);
 
-    // Initialize Network Receiver
-    m_networkReceiver = new NetworkReceiver(this);
-    m_networkReceiver->setUrl(m_urlEdit->text());
+    // Fuente: entrada física (ajusta si quieres red)
+    m_ctrl->setAudioSource(Controller::PhysicalAudioInput);
 
-    // Configure renderers
-    updateWaveformConfig();
-    updateSpectrogramConfig();
-
-    // Connect DSP signals
-    connect(m_dspWorker, &DSPWorker::framesReady,
-            m_waveformRenderer, &WaveformRenderer::processFrames);
-    connect(m_dspWorker, &DSPWorker::framesReady,
-            m_spectrogramRenderer, &SpectrogramRenderer::processFrames);
-    connect(m_dspWorker, &DSPWorker::statsUpdated,
-            this, &MainWindow::updateStats);
-    connect(m_dspWorker, &DSPWorker::errorOccurred,
-            this, &MainWindow::handleDSPError);
-
-    // Connect network signals
-    connect(m_networkReceiver, &NetworkReceiver::floatChunkReady,
-            m_dspWorker, &DSPWorker::processChunk);
-    connect(m_networkReceiver, &NetworkReceiver::errorOccurred,
-            this, &MainWindow::handleNetworkError);
+    PhysicalInputConfig cfg;
+    cfg.deviceId     = QString();   // usa dispositivo por defecto (o el que toque)
+    cfg.sampleRate   = 44100;
+    cfg.channelCount = 1;
+    m_ctrl->setPhysicalConfig(cfg);
 }
 
 // Slot implementations
@@ -666,7 +648,9 @@ void MainWindow::startStreaming()
     if (m_isStreaming) return;
 
     try {
-        m_networkReceiver->start();
+
+        // TODO: get current config
+
         m_isStreaming = true;
         m_isPaused = false;
 
@@ -679,6 +663,7 @@ void MainWindow::startStreaming()
         m_statusLabel->setText("Streaming started");
 
         m_uiUpdateTimer->start();
+        m_ctrl->startCapture();
 
     } catch (const std::exception& e) {
         QMessageBox::critical(this, "Streaming Error",
@@ -690,7 +675,7 @@ void MainWindow::stopStreaming()
 {
     if (!m_isStreaming) return;
 
-    m_networkReceiver->stop();
+    m_ctrl->stopCapture();
     m_isStreaming = false;
     m_isPaused = false;
 
