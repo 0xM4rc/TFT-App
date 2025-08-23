@@ -6,6 +6,7 @@
 #include "receivers/ireceiver.h"
 #include <QObject>
 #include "views/waveform_render.h"
+#include "views/spectrogram_renderer.h"
 #include <QPointer>
 
 class AudioDb;
@@ -29,6 +30,7 @@ public:
     ~Controller() override;
 
     void setWaveformView(WaveformRenderer* view);
+    void setSpectrogramView(SpectrogramRenderer* v){ m_specView = v; }
 
     // getters
     AudioSource audioSource() const { return m_source; }
@@ -52,6 +54,12 @@ public slots:
     void pauseWaveform(bool paused);
     void setWaveformZoom(float z);
     void setWaveformConfig(const WaveformConfig& cfg);
+
+    // spectrogram render
+    void clearSpectrogram();
+    void pauseSpectrogram(bool paused);
+    void setSpectrogramConfig(const SpectrogramConfig& cfg);
+
 
 private slots:
     void onDspFramesReady(const QVector<FrameData>& frames);
@@ -104,6 +112,7 @@ private:
     QString m_currentDbPath;
 
     QPointer<WaveformRenderer> m_waveView;
+    QPointer<SpectrogramRenderer> m_specView;
 
     bool currentPhysicalConfig(PhysicalInputConfig& out) const;
     bool currentNetworkConfig(NetworkInputConfig& out) const;

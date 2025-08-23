@@ -348,6 +348,16 @@ void Controller::onDspFramesReady(const QVector<FrameData>& frames)
         },
         Qt::QueuedConnection
         );
+
+    if (m_specView) {
+        QVector<FrameData> copy2 = frames;
+        QMetaObject::invokeMethod(
+            m_specView.data(),
+            [specView = m_specView.data(), copy2]() {
+                if (specView) specView->processFrames(copy2);
+            },
+            Qt::QueuedConnection);
+    }
 }
 
 void Controller::clearWaveform()
@@ -414,6 +424,42 @@ bool Controller::currentNetworkConfig(NetworkInputConfig& out) const {
     if (m_source != NetworkAudioInput) return false;
     out = m_netCfg; return true;
 }
+
+// SpectrogramRender
+
+void Controller::clearSpectrogram()
+{
+    if (!m_specView) return;
+    QMetaObject::invokeMethod(
+        m_specView.data(),
+        [sv = m_specView.data()](){
+            if (sv) sv->clear();
+        },
+        Qt::QueuedConnection);
+}
+
+void Controller::pauseSpectrogram(bool paused)
+{
+    if (!m_specView) return;
+    QMetaObject::invokeMethod(
+        m_specView.data(),
+        [sv = m_specView.data(), paused](){
+            if (sv) sv->pause(paused);
+        },
+        Qt::QueuedConnection);
+}
+
+void Controller::setSpectrogramConfig(const SpectrogramConfig& cfg)
+{
+    if (!m_specView) return;
+    QMetaObject::invokeMethod(
+        m_specView.data(),
+        [sv = m_specView.data(), cfg](){
+            if (sv) sv->setConfig(cfg);
+        },
+        Qt::QueuedConnection);
+}
+
 
 // Utils
 QString Controller::makeRandomDbPath()

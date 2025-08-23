@@ -531,10 +531,12 @@ void MainWindow::setupConnections()
 
 void MainWindow::initializeComponents()
 {
+    // Rotar DB por sesión (temporal en /tmp)
     m_ctrl->setRotateDbPerSession(true);
 
-    // Enchufa la vista de waveform al Controller
+    // Enchufa las vistas al Controller
     m_ctrl->setWaveformView(m_waveformRenderer);
+    m_ctrl->setSpectrogramView(m_spectrogramRenderer);
 
     // Logs útiles
     connect(m_ctrl, &Controller::databaseChanged, [](const QString& p){
@@ -543,37 +545,43 @@ void MainWindow::initializeComponents()
     connect(m_ctrl, &Controller::errorOccurred, [](const QString& e){
         qWarning() << "[MAINWINDOW] ERROR:" << e;
     });
+    connect(m_ctrl, &Controller::framesReady, [](const QVector<FrameData>& frames){
+        qDebug() << "[MAINWINDOW] Frames:" << frames.size();
+    });
+    connect(m_ctrl, &Controller::audioFormatDetected, this, [this](const QAudioFormat& f){
+        m_statusLabel->setText(
+            QString("Input: %1 Hz, %2 ch, %3-bit")
+                .arg(f.sampleRate()).arg(f.channelCount()).arg(f.sampleFormat()));
+    });
 
-    // ⚠️ Fuente: RED en lugar de física
-    // Fuente: RED y URL fijo
+    // ⚠️ Fuente: RED (stream HTTP AAC)
     m_ctrl->setAudioSource(Controller::NetworkAudioInput);
 
     NetworkInputConfig cfg;
 
     // ── Fuente ──
-    cfg.url = "http://stream.radioparadise.com/aac-128"; // tu URL
+    cfg.url = "http://stream.radioparadise.com/aac-128";
 
     // ── Appsink / buffering ──
     cfg.maxBuffers  = 10;
     cfg.dropBuffers = true;   // descarta si se llena (evita lag en streaming)
     cfg.syncAudio   = false;  // en streaming suele ir en false
-    cfg.asyncSink   = false;  // puedes dejarlo en false
+    cfg.asyncSink   = false;
 
     // ── Bus ──
     cfg.busTimerInterval = 100;
 
     // ── Timeouts / reconexión ──
     cfg.connectionTimeoutMs  = 30000;
-    cfg.autoReconnect        = false;   // activa si lo necesitas
+    cfg.autoReconnect        = true;
     cfg.maxReconnectAttempts = 3;
     cfg.reconnectDelayMs     = 2000;
 
-    // ── Audio target (recomendado para tu DSP) ──
-    // Fuerza a raw float 44.1kHz estéreo
+    // ── Audio target (lo que espera el DSPWorker) ──
     cfg.targetSampleRate = 44100;
     cfg.targetChannels   = 2;
     cfg.targetFormat     = QAudioFormat::Float;
-    cfg.enforceFormat    = false; // pon true si quieres fallar si no se puede convertir
+    cfg.enforceFormat    = false; // pon true si quieres abortar si no se puede convertir
 
     // ── Logging ──
     cfg.enableDebugOutput = true;
@@ -584,8 +592,34 @@ void MainWindow::initializeComponents()
 
     m_ctrl->setNetworkConfig(cfg);
 
-    // (Opcional) refleja el URL en la UI si quieres
-    //m_urlEdit->setText(net.url);
+    // Config inicial de waveform (opcional)
+    m_waveformConfig.blockWidth      = 4;
+    m_waveformConfig.blockSpacing    = 1;
+    m_waveformConfig.showPeaks       = true;
+    m_waveformConfig.showRMS         = false;
+    m_waveformConfig.autoScale       = true;
+    m_waveformConfig.scrolling       = true;
+    m_waveformConfig.updateInterval  = 30;
+    m_waveformConfig.backgroundColor = Qt::black;
+    m_waveformConfig.peakColor       = Qt::cyan;
+    m_waveformConfig.rmsColor        = Qt::yellow;
+    m_ctrl->setWaveformConfig(m_waveformConfig);
+
+    // Config inicial de spectrograma (opcional)
+    m_spectrogramConfig.fftSize        = 1024;
+    m_spectrogramConfig.sampleRate     = 44100;
+    m_spectrogramConfig.blockWidth     = 2;
+    m_spectrogramConfig.updateInterval = 30;
+    m_spectrogramConfig.maxColumns     = 400;
+    m_spectrogramConfig.autoScroll     = true;
+    m_spectrogramConfig.minDb          = -100;
+    m_spectrogramConfig.maxDb          = 0;
+    m_ctrl->setSpectrogramConfig(m_spectrogramConfig);
+
+    // Opcional: refleja el URL en la UI
+    if (m_urlEdit) {
+        m_urlEdit->setText(cfg.url);
+    }
 }
 
 
@@ -727,8 +761,7 @@ void MainWindow::pauseStreaming()
 
     m_isPaused = !m_isPaused;
 
-    m_ctrl->pauseWaveform(m_isPaused);
-
+    // UI…
     if (m_isPaused) {
         m_pauseAction->setText("Resume");
         m_pauseAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
@@ -738,6 +771,10 @@ void MainWindow::pauseStreaming()
         m_pauseAction->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
         m_statusLabel->setText("Streaming resumed");
     }
+
+    // Notificar a las vistas a través del Controller
+    m_ctrl->pauseWaveform(m_isPaused);
+    m_ctrl->pauseSpectrogram(m_isPaused);   // <<---
 }
 
 
@@ -752,6 +789,7 @@ void MainWindow::resetAnalysis()
     if (m_audioDb) {
         m_audioDb->clearDatabase();
     }
+     m_ctrl->clearSpectrogram();
     m_statusLabel->setText("Analysis reset");
 }
 
@@ -794,20 +832,20 @@ void MainWindow::updateWaveformConfig()
 
 void MainWindow::updateSpectrogramConfig()
 {
-    if (!m_spectrogramRenderer) return;
-
-    m_spectrogramConfig.fftSize = m_fftSizeSpin->value();
-    m_spectrogramConfig.sampleRate = m_sampleRateSpin->value();
-    m_spectrogramConfig.blockWidth = m_specBlockWidthSpin->value();
+    m_spectrogramConfig.fftSize        = m_fftSizeSpin->value();
+    m_spectrogramConfig.sampleRate     = m_sampleRateSpin->value();
+    m_spectrogramConfig.blockWidth     = m_specBlockWidthSpin->value();
     m_spectrogramConfig.updateInterval = m_specUpdateIntervalSpin->value();
-    m_spectrogramConfig.maxColumns = m_maxColumnsSpin->value();
-    m_spectrogramConfig.autoScroll = m_autoScrollCheck->isChecked();
-    m_spectrogramConfig.minDb = m_minDbSpin->value();
-    m_spectrogramConfig.maxDb = m_maxDbSpin->value();
+    m_spectrogramConfig.maxColumns     = m_maxColumnsSpin->value();
+    m_spectrogramConfig.autoScroll     = m_autoScrollCheck->isChecked();
+    m_spectrogramConfig.minDb          = m_minDbSpin->value();
+    m_spectrogramConfig.maxDb          = m_maxDbSpin->value();
 
-    m_spectrogramRenderer->setConfig(m_spectrogramConfig);
+    // Antes: m_spectrogramRenderer->setConfig(m_spectrogramConfig);
+    m_ctrl->setSpectrogramConfig(m_spectrogramConfig);   // <<--- vía Controller
     m_statusLabel->setText("Spectrogram configuration updated");
 }
+
 
 void MainWindow::updateNetworkConfig()
 {
