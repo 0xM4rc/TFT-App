@@ -15,8 +15,7 @@ public:
     explicit NetworkReceiver(QObject* parent = nullptr);
     ~NetworkReceiver() override;
 
-    // Nuevo método para configuración específica
-    void setConfig(const NetworkInputConfig& config);
+    bool setConfig(const IReceiverConfig& cfg) override;
 
     // Mantener compatibilidad con interfaz existente
     void setUrl(const QString& url) {
@@ -27,7 +26,6 @@ public:
     void stop() override;
 
 signals:
-    void floatChunkReady(const QVector<float>& floats, quint64 timestampNs);
     void streamFinished();
 
 private slots:
@@ -39,7 +37,7 @@ private:
     void handleEos();
     gboolean handleBusMessage(GstMessage* msg);
     void cleanup();
-    QString createPipelineString();  // Ya no necesita parámetro
+    QString createPipelineString();
 
     // Callbacks estáticos
     static GstFlowReturn onNewSample(GstAppSink* sink, gpointer user);

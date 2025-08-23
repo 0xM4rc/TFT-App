@@ -1,11 +1,15 @@
-#ifndef AUDIO_CONFIGS_H
-#define AUDIO_CONFIGS_H
+// config/audio_configs.h
+#pragma once
 #include "qobject.h"
 #include "qurl.h"
 #include <QString>
 #include <QAudioFormat>
 
-struct PhysicalInputConfig {
+struct IReceiverConfig {
+    virtual ~IReceiverConfig() = default;
+};
+
+struct PhysicalInputConfig : public IReceiverConfig {
     int  sampleRate          = 44100;
     int  channelCount        = 2;
     QAudioFormat::SampleFormat sampleFormat = QAudioFormat::Float;
@@ -33,7 +37,7 @@ struct PhysicalInputConfig {
     }
 };
 
-struct NetworkInputConfig {
+struct NetworkInputConfig : public IReceiverConfig {
     // Fuente
     QString url;
 
@@ -247,5 +251,3 @@ struct DSPConfig {
         , hopSize(fftSz / 2)  // Hop size típico es la mitad del FFT size
     {}
 };
-
-#endif // AUDIO_CONFIGS_H

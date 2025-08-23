@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QUuid>
 #include <QCoreApplication>
+#include "views/waveform_render.h"
 
 
 Controller::Controller(QObject *parent)
@@ -50,25 +51,49 @@ void Controller::setNetworkConfig(const NetworkInputConfig &cfg)
 
 void Controller::applyConfigToCurrentReceiver()
 {
-    if (!m_receiver || !m_capturing)
-        return;
+    if (!m_receiver || m_capturing) return;
 
     switch (m_source) {
-    case PhysicalAudioInput:
-        if (auto phy = qobject_cast<AudioReceiver*>(m_receiver))
-            phy->setConfig(m_physCfg);
-        break;
-    case NetworkAudioInput:
-        if (auto net = qobject_cast<NetworkReceiver*>(m_receiver))
-            net->setConfig(m_netCfg);
+    case PhysicalAudioInput: {
+        if (auto phy = qobject_cast<AudioReceiver*>(m_receiver)) {
+            PhysicalInputConfig cfg = m_physCfg; // copia por valor
+            if (m_receiver->thread() == QThread::currentThread()) {
+                phy->setConfig(cfg);
+            } else {
+                QMetaObject::invokeMethod(
+                    phy,
+                    [phy, cfg]() { phy->setConfig(cfg); },
+                    Qt::QueuedConnection
+                    );
+            }
+        }
         break;
     }
+    case NetworkAudioInput: {
+        if (auto net = qobject_cast<NetworkReceiver*>(m_receiver)) {
+            NetworkInputConfig cfg = m_netCfg; // copia por valor
+            if (m_receiver->thread() == QThread::currentThread()) {
+                net->setConfig(cfg);
+            } else {
+                QMetaObject::invokeMethod(
+                    net,
+                    [net, cfg]() { net->setConfig(cfg); },
+                    Qt::QueuedConnection
+                    );
+            }
+        }
+        break;
+    }
+    }
 }
+
 
 void Controller::startCapture()
 {
     if (m_capturing)
         return;
+
+    qDebug() << "START CAPTURE";
 
     // 1) (Re)crear receiver en su hilo
     if (!createReceiver()) {
@@ -128,6 +153,7 @@ void Controller::stopCapture()
     emit capturingChanged(false);
 }
 
+
 bool Controller::createReceiver()
 {
     if (m_receiver)
@@ -136,12 +162,22 @@ bool Controller::createReceiver()
     m_captureThread = new QThread(this);
 
     switch (m_source) {
-    case PhysicalAudioInput:
+    case PhysicalAudioInput: {
         m_receiver = new AudioReceiver;
+        PhysicalInputConfig pcfg;
+        if (currentPhysicalConfig(pcfg)) {
+            static_cast<AudioReceiver*>(m_receiver)->setConfig(pcfg);
+        }
         break;
-    case NetworkAudioInput:
+    }
+    case NetworkAudioInput: {
         m_receiver = new NetworkReceiver;
+        NetworkInputConfig ncfg;
+        if (currentNetworkConfig(ncfg)) {
+            static_cast<NetworkReceiver*>(m_receiver)->setConfig(ncfg);
+        }
         break;
+    }
     default:
         m_receiver = nullptr;
         break;
@@ -162,6 +198,7 @@ bool Controller::createReceiver()
 
     return true;
 }
+
 
 
 void Controller::cleanupReceiver()
@@ -234,7 +271,12 @@ bool Controller::createDspWorker()
     connect(m_dspThread, &QThread::finished, m_db,        &QObject::deleteLater);
 
     // señales DSP -> Controller
-    connect(m_dspWorker, &DSPWorker::framesReady,  this, &Controller::framesReady,  Qt::QueuedConnection);
+    connect(m_dspWorker, &DSPWorker::framesReady,
+            this, &Controller::onDspFramesReady, Qt::QueuedConnection);
+
+    connect(m_dspWorker, &DSPWorker::framesReady,
+            this, &Controller::framesReady, Qt::QueuedConnection);
+
     connect(m_dspWorker, &DSPWorker::statsUpdated, this, &Controller::statsUpdated, Qt::QueuedConnection);
     connect(m_dspWorker, &DSPWorker::errorOccurred,this, &Controller::errorOccurred,Qt::QueuedConnection);
 
@@ -293,6 +335,85 @@ void Controller::cleanupDspWorker()
     emit databaseChanged(QString());
 }
 
+void Controller::onDspFramesReady(const QVector<FrameData>& frames)
+{
+    if (!m_waveView) return;
+    QVector<FrameData> copy = frames;
+
+    QMetaObject::invokeMethod(
+        m_waveView.data(),
+        [vw = m_waveView.data(), copy]() {
+            if (!vw) return;
+            vw->processFrames(copy);
+        },
+        Qt::QueuedConnection
+        );
+}
+
+void Controller::clearWaveform()
+{
+    if (!m_waveView) return;
+    QMetaObject::invokeMethod(
+        m_waveView.data(),
+        [vw = m_waveView.data()]() {
+            if (vw) vw->clear();
+        },
+        Qt::QueuedConnection
+        );
+}
+
+void Controller::pauseWaveform(bool paused)
+{
+    if (!m_waveView) return;
+    QMetaObject::invokeMethod(
+        m_waveView.data(),
+        [vw = m_waveView.data(), paused]() {
+            if (vw) vw->setPaused(paused);
+        },
+        Qt::QueuedConnection
+        );
+}
+
+void Controller::setWaveformZoom(float z)
+{
+    if (!m_waveView) return;
+    QMetaObject::invokeMethod(
+        m_waveView.data(),
+        [vw = m_waveView.data(), z]() {
+            if (vw) vw->setZoom(z);
+        },
+        Qt::QueuedConnection
+        );
+}
+
+void Controller::setWaveformConfig(const WaveformConfig& cfg)
+{
+    if (!m_waveView) return;
+    QMetaObject::invokeMethod(
+        m_waveView.data(),
+        [vw = m_waveView.data(), cfg]() {
+            if (vw) vw->setConfig(cfg);
+        },
+        Qt::QueuedConnection
+        );
+}
+
+void Controller::setWaveformView(WaveformRenderer* view)
+{
+    m_waveView = view;
+    // (Opcional) conecta una señal para enviar frames sin invokeMethod manual:
+    // connect(this, &Controller::framesReady, m_waveView, &WaveformRenderer::processFrames, Qt::QueuedConnection);
+}
+
+bool Controller::currentPhysicalConfig(PhysicalInputConfig& out) const {
+    if (m_source != PhysicalAudioInput) return false;
+    out = m_physCfg; return true;
+}
+
+bool Controller::currentNetworkConfig(NetworkInputConfig& out) const {
+    if (m_source != NetworkAudioInput) return false;
+    out = m_netCfg; return true;
+}
 
 // Utils
 QString Controller::makeRandomDbPath()

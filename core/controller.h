@@ -5,6 +5,8 @@
 #include "qaudioformat.h"
 #include "receivers/ireceiver.h"
 #include <QObject>
+#include "views/waveform_render.h"
+#include <QPointer>
 
 class AudioDb;
 class Controller : public QObject
@@ -26,6 +28,8 @@ public:
     explicit Controller(QObject *parent = nullptr);
     ~Controller() override;
 
+    void setWaveformView(WaveformRenderer* view);
+
     // getters
     AudioSource audioSource() const { return m_source; }
     bool        isCapturing() const { return m_capturing; }
@@ -42,6 +46,15 @@ public slots:
     // control de captura
     void startCapture();
     void stopCapture();
+
+    // waveform render
+    void clearWaveform();
+    void pauseWaveform(bool paused);
+    void setWaveformZoom(float z);
+    void setWaveformConfig(const WaveformConfig& cfg);
+
+private slots:
+    void onDspFramesReady(const QVector<FrameData>& frames);
 
 signals:
     void audioSourceChanged(AudioSource);
@@ -89,6 +102,11 @@ private:
 
     bool    m_rotateDbPerSession = true;
     QString m_currentDbPath;
+
+    QPointer<WaveformRenderer> m_waveView;
+
+    bool currentPhysicalConfig(PhysicalInputConfig& out) const;
+    bool currentNetworkConfig(NetworkInputConfig& out) const;
 };
 
 #endif // CONTROLLER_H

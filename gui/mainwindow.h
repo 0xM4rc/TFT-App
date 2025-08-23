@@ -107,8 +107,6 @@ private:
 
     // Componentes principales
     AudioDb* m_audioDb;
-    DSPWorker* m_dspWorker;
-    NetworkReceiver* m_networkReceiver;
     WaveformRenderer* m_waveformRenderer;
     SpectrogramRenderer* m_spectrogramRenderer;
 

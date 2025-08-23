@@ -23,34 +23,55 @@ NetworkReceiver::~NetworkReceiver() {
     stop();
 }
 
-void NetworkReceiver::setConfig(const NetworkInputConfig& config) {
-    // Validar configuración antes de asignarla
-    auto validation = const_cast<NetworkInputConfig&>(config).validate(true);
+bool NetworkReceiver::setConfig(const IReceiverConfig& cfg)
+{
+    // 1) Comprobar tipo
+    const auto* net = dynamic_cast<const NetworkInputConfig*>(&cfg);
+    if (!net) {
+        qWarning() << "Config incompatible: se esperaba NetworkInputConfig";
+        emit errorOccurred(QStringLiteral("Config incompatible: se esperaba NetworkInputConfig"));
+        return false;
+    }
+
+    // 2) (Opcional pero recomendado) No permitir cambiar mientras corre
+    if (m_isRunning) {
+        qWarning() << "No se puede cambiar configuración mientras el receptor de red está activo";
+        emit errorOccurred(QStringLiteral("No se puede cambiar configuración mientras el receptor de red está activo"));
+        return false;
+    }
+
+    // 3) Validar con copia para permitir ajustes automáticos sin const_cast
+    NetworkInputConfig working = *net;        // copia que puede ajustarse
+    auto validation = working.validate(true); // true => permitir ajustes
 
     if (!validation.ok) {
         qCritical() << "Configuración inválida:";
         for (const QString& error : validation.errors) {
             qCritical() << "  Error:" << error;
         }
-        return;
+        emit errorOccurred(QStringLiteral("Configuración inválida (ver logs)"));
+        return false;
     }
 
-    // Mostrar warnings si los hay
+    // 4) Warnings/ajustes
     if (!validation.warnings.isEmpty()) {
         qWarning() << "Advertencias de configuración:";
         for (const QString& warning : validation.warnings) {
             qWarning() << "  " << warning;
         }
     }
-
     if (validation.adjusted) {
         qDebug() << "Configuración ajustada automáticamente";
     }
 
-    m_config = config;
+    // 5) Asignar config (ya ajustada) y aplicar efectos secundarios
+    m_config = std::move(working);
 
-    // Actualizar timer si cambió el intervalo
-    m_busTimer->setInterval(m_config.busTimerInterval);
+    if (m_busTimer) {
+        m_busTimer->setInterval(m_config.busTimerInterval);
+    } else {
+        qWarning() << "m_busTimer es null; no se pudo aplicar el intervalo del bus";
+    }
 
     if (m_config.enableDebugOutput) {
         qDebug() << "Nueva configuración aplicada:";
@@ -60,6 +81,8 @@ void NetworkReceiver::setConfig(const NetworkInputConfig& config) {
         qDebug() << "  Target sample rate:" << m_config.targetSampleRate;
         qDebug() << "  Target channels:" << m_config.targetChannels;
     }
+
+    return true;
 }
 
 void NetworkReceiver::start() {
@@ -74,6 +97,9 @@ void NetworkReceiver::start() {
 
     // Usar el método del config para generar el pipeline
     QString pipelineStr = m_config.getPipelineString();
+
+    // temporary
+    qDebug() << "[NetworkReceiver] URL configurada:" << m_config.url;
 
     if (m_config.enableDebugOutput) {
         qDebug() << "Pipeline GStreamer:" << pipelineStr;
@@ -379,6 +405,11 @@ void NetworkReceiver::onPadAdded(GstElement* /*element*/, GstPad* pad, gpointer 
     NetworkReceiver* self = static_cast<NetworkReceiver*>(user);
 
     GstCaps* caps = gst_pad_get_current_caps(pad);
+    // added temporary
+    gchar* s = caps ? gst_caps_to_string(caps) : g_strdup("no caps");
+    qDebug() << "[pad-added]" << s;
+    g_free(s);
+
     if (!caps) return;
 
     GstStructure* structure = gst_caps_get_structure(caps, 0);

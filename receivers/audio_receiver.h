@@ -16,7 +16,7 @@ public:
     ~AudioReceiver() override;
 
     /* --- configuración --- */
-    void setConfig(const PhysicalInputConfig &cfg);
+    bool setConfig(const IReceiverConfig& cfg) override;
     QAudioDevice selectAudioDevice() const;
     QAudioFormat setupAudioFormat(const QAudioDevice &device) const;
     bool validateConfiguration(const QAudioDevice& device,
@@ -38,7 +38,7 @@ private:
     QAudioDevice  m_currentDevice;
     QVector<float> m_floatBuffer;
 
-
+    bool applyConfig(const PhysicalInputConfig& cfg);
 };
 
 #endif // AUDIO_RECEIVER_H

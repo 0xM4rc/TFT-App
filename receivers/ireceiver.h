@@ -8,8 +8,6 @@
 #include <QAudioFormat>
 #include <QString>
 
-// Configuración genérica
-
 
 class IReceiver : public QObject {
     Q_OBJECT
@@ -22,6 +20,8 @@ public slots:
     virtual void start() = 0;
     virtual void stop()  = 0;
 
+    virtual bool setConfig(const IReceiverConfig& cfg) = 0;
+
 signals:
     // Datos en punto común
     void floatChunkReady(const QVector<float>& floats, quint64 timestampNs);
@@ -29,7 +29,7 @@ signals:
     // Señales auxiliares opcionales
     void audioFormatDetected(const QAudioFormat& format);
     void errorOccurred(const QString& error);
-    void finished();         // en vez de streamFinished
+    void finished();
 };
 
 #endif // IRECEIVER_H

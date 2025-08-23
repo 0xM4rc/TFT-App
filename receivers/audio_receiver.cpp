@@ -12,17 +12,34 @@ AudioReceiver::~AudioReceiver() {
     stop();
 }
 
-void AudioReceiver::setConfig(const PhysicalInputConfig &cfg)
+bool AudioReceiver::setConfig(const IReceiverConfig& cfg)
+{
+    // Intentamos convertir a PhysicalInputConfig
+    const auto *phys = dynamic_cast<const PhysicalInputConfig*>(&cfg);
+    if (!phys) {
+        qWarning() << "Config incompatible: se esperaba PhysicalInputConfig";
+        emit errorOccurred(QStringLiteral("Config incompatible: se esperaba PhysicalInputConfig"));
+        return false;
+    }
+    return applyConfig(*phys);
+}
+
+bool AudioReceiver::applyConfig(const PhysicalInputConfig &cfg)
 {
     if (m_audioSource) {
         qWarning() << "No se puede cambiar configuración mientras captura está activa";
-        return;
+        emit errorOccurred(QStringLiteral("No se puede cambiar configuración mientras la captura está activa"));
+        return false;
     }
+
     if (int err = cfg.isValid(); err != 0) {
         qWarning() << "PhysicalInputConfig inválido, código" << err;
-        return;
+        emit errorOccurred(QStringLiteral("PhysicalInputConfig inválido, código %1").arg(err));
+        return false;
     }
+
     m_cfg = cfg;
+    return true;
 }
 
 void AudioReceiver::start()

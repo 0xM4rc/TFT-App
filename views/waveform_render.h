@@ -9,6 +9,8 @@
 #include <QMutex>
 #include <QtTypes>
 
+#include <QMetaType>
+
 /**
  * @brief Estructura para representar un bloque de waveform
  */
@@ -43,6 +45,10 @@ struct WaveformConfig {
     bool scrolling = true;          ///< Desplazamiento automático
     int updateInterval = 30;        ///< Intervalo de actualización en ms
 };
+
+Q_DECLARE_METATYPE(WaveformConfig);
+Q_DECLARE_METATYPE(FrameData);
+Q_DECLARE_METATYPE(QVector<FrameData>);
 
 /**
  * @brief Widget para renderizar waveform continuo estilo Audacity

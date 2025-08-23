@@ -11,8 +11,6 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_audioDb(nullptr)
-    , m_dspWorker(nullptr)
-    , m_networkReceiver(nullptr)
     , m_waveformRenderer(nullptr)
     , m_spectrogramRenderer(nullptr)
     , m_centralWidget(nullptr)
@@ -535,29 +533,62 @@ void MainWindow::initializeComponents()
 {
     m_ctrl->setRotateDbPerSession(true);
 
-    QObject::connect(m_ctrl, &Controller::databaseChanged, [](const QString &path){
-        qDebug() << "[MAINWINDOW] DB:" << (path.isEmpty() ? "<none>" : path);
+    // Enchufa la vista de waveform al Controller
+    m_ctrl->setWaveformView(m_waveformRenderer);
+
+    // Logs útiles
+    connect(m_ctrl, &Controller::databaseChanged, [](const QString& p){
+        qDebug() << "[MAINWINDOW] DB:" << (p.isEmpty() ? "<none>" : p);
     });
-    QObject::connect(m_ctrl, &Controller::errorOccurred, [](const QString &err){
-        qWarning() << "[MAINWINDOW] ERROR:" << err;
-    });
-    QObject::connect(m_ctrl, &Controller::framesReady, [](const QVector<FrameData> &frames){
-        qDebug() << "[MAINWINDOW] Frames:" << frames.size();
+    connect(m_ctrl, &Controller::errorOccurred, [](const QString& e){
+        qWarning() << "[MAINWINDOW] ERROR:" << e;
     });
 
-    // TODO: Poner valores por defecto, en el start se debería recopilar las configuraciones
-    // para iniciar captura
+    // ⚠️ Fuente: RED en lugar de física
+    // Fuente: RED y URL fijo
+    m_ctrl->setAudioSource(Controller::NetworkAudioInput);
 
+    NetworkInputConfig cfg;
 
-    // Fuente: entrada física (ajusta si quieres red)
-    m_ctrl->setAudioSource(Controller::PhysicalAudioInput);
+    // ── Fuente ──
+    cfg.url = "http://stream.radioparadise.com/aac-128"; // tu URL
 
-    PhysicalInputConfig cfg;
-    cfg.deviceId     = QString();   // usa dispositivo por defecto (o el que toque)
-    cfg.sampleRate   = 44100;
-    cfg.channelCount = 1;
-    m_ctrl->setPhysicalConfig(cfg);
+    // ── Appsink / buffering ──
+    cfg.maxBuffers  = 10;
+    cfg.dropBuffers = true;   // descarta si se llena (evita lag en streaming)
+    cfg.syncAudio   = false;  // en streaming suele ir en false
+    cfg.asyncSink   = false;  // puedes dejarlo en false
+
+    // ── Bus ──
+    cfg.busTimerInterval = 100;
+
+    // ── Timeouts / reconexión ──
+    cfg.connectionTimeoutMs  = 30000;
+    cfg.autoReconnect        = false;   // activa si lo necesitas
+    cfg.maxReconnectAttempts = 3;
+    cfg.reconnectDelayMs     = 2000;
+
+    // ── Audio target (recomendado para tu DSP) ──
+    // Fuerza a raw float 44.1kHz estéreo
+    cfg.targetSampleRate = 44100;
+    cfg.targetChannels   = 2;
+    cfg.targetFormat     = QAudioFormat::Float;
+    cfg.enforceFormat    = false; // pon true si quieres fallar si no se puede convertir
+
+    // ── Logging ──
+    cfg.enableDebugOutput = true;
+    cfg.logBufferStats    = false;
+
+    // ── HTTP ──
+    cfg.userAgent = "NetworkReceiver/1.0";
+
+    m_ctrl->setNetworkConfig(cfg);
+
+    // (Opcional) refleja el URL en la UI si quieres
+    //m_urlEdit->setText(net.url);
 }
+
+
 
 // Slot implementations
 void MainWindow::newSession()
@@ -696,6 +727,8 @@ void MainWindow::pauseStreaming()
 
     m_isPaused = !m_isPaused;
 
+    m_ctrl->pauseWaveform(m_isPaused);
+
     if (m_isPaused) {
         m_pauseAction->setText("Resume");
         m_pauseAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
@@ -707,25 +740,25 @@ void MainWindow::pauseStreaming()
     }
 }
 
+
 void MainWindow::resetAnalysis()
 {
     if (m_waveformRenderer) {
-        // Reset waveform display
+        m_ctrl->clearWaveform();
     }
     if (m_spectrogramRenderer) {
-        // Reset spectrogram display
+        // TODO: si tienes API similar para el espectrograma, llámala aquí
     }
     if (m_audioDb) {
         m_audioDb->clearDatabase();
     }
-
     m_statusLabel->setText("Analysis reset");
 }
 
+
 void MainWindow::updateDSPConfig()
 {
-    if (!m_dspWorker) return;
-
+    // TODO: set connections to controller
     m_dspConfig.blockSize = m_blockSizeSpin->value();
     m_dspConfig.fftSize = m_fftSizeSpin->value();
     m_dspConfig.sampleRate = m_sampleRateSpin->value();
@@ -742,23 +775,22 @@ void MainWindow::updateWaveformConfig()
 {
     if (!m_waveformRenderer) return;
 
-    m_waveformConfig.blockWidth = m_blockWidthSpin->value();
-    m_waveformConfig.blockSpacing = m_blockSpacingSpin->value();
-    m_waveformConfig.showPeaks = m_showPeaksCheck->isChecked();
-    m_waveformConfig.showRMS = m_showRMSCheck->isChecked();
-    m_waveformConfig.autoScale = m_autoScaleCheck->isChecked();
-    m_waveformConfig.scrolling = m_scrollingCheck->isChecked();
-    m_waveformConfig.updateInterval = m_updateIntervalSpin->value();
-    m_waveformConfig.backgroundColor = m_tempBackgroundColor.isValid() ?
-                                           m_tempBackgroundColor : Qt::black;
-    m_waveformConfig.peakColor = m_tempPeakColor.isValid() ?
-                                     m_tempPeakColor : Qt::cyan;
-    m_waveformConfig.rmsColor = m_tempRmsColor.isValid() ?
-                                    m_tempRmsColor : Qt::yellow;
+    m_waveformConfig.blockWidth       = m_blockWidthSpin->value();
+    m_waveformConfig.blockSpacing     = m_blockSpacingSpin->value();
+    m_waveformConfig.showPeaks        = m_showPeaksCheck->isChecked();
+    m_waveformConfig.showRMS          = m_showRMSCheck->isChecked();
+    m_waveformConfig.autoScale        = m_autoScaleCheck->isChecked();
+    m_waveformConfig.scrolling        = m_scrollingCheck->isChecked();
+    m_waveformConfig.updateInterval   = m_updateIntervalSpin->value();
+    m_waveformConfig.backgroundColor  = m_tempBackgroundColor.isValid() ? m_tempBackgroundColor : Qt::black;
+    m_waveformConfig.peakColor        = m_tempPeakColor.isValid() ? m_tempPeakColor : Qt::cyan;
+    m_waveformConfig.rmsColor         = m_tempRmsColor.isValid() ? m_tempRmsColor : Qt::yellow;
 
-    m_waveformRenderer->setConfig(m_waveformConfig);
+    m_ctrl->setWaveformConfig(m_waveformConfig);
+
     m_statusLabel->setText("Waveform configuration updated");
 }
+
 
 void MainWindow::updateSpectrogramConfig()
 {
@@ -779,12 +811,13 @@ void MainWindow::updateSpectrogramConfig()
 
 void MainWindow::updateNetworkConfig()
 {
-    if (!m_networkReceiver) return;
+    // TODO: connect controller
+    //NetworkInputConfig cfg = buildNetworkConfigFromUi();
 
-    m_networkReceiver->setUrl(m_urlEdit->text());
-    // Apply other network settings
+    // Validar y aplicar a Controller (solo aplica si NO está capturando)
+    //m_ctrl->setNetworkConfig(cfg);
 
-    m_statusLabel->setText("Network configuration updated");
+    m_statusLabel->setText("Network configuration updated (pending start)");
 }
 
 void MainWindow::updateDatabaseConfig()
