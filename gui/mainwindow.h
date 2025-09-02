@@ -28,6 +28,9 @@
 #include <QFileDialog>
 #include <QSettings>
 #include <QCloseEvent>
+#include <QMediaDevices>
+#include <QAudioDevice>
+#include <QRadioButton>
 
 #include "core/audio_db.h"
 #include "core/dsp_worker.h"
@@ -86,8 +89,13 @@ private slots:
     void selectSpectrogramColors();
     void resetToDefaults();
 
+    void refreshAudioDevices();
+
 private:
     Controller* m_ctrl = nullptr;
+
+    NetworkInputConfig buildNetworkConfigFromUi() const;
+    PhysicalInputConfig buildPhysicalConfigFromUi() const;
 
     void initializeComponents();
     void setupUi();
@@ -245,6 +253,13 @@ private:
     QColor m_tempBackgroundColor;
     QColor m_tempPeakColor;
     QColor m_tempRmsColor;
+
+    // Input (source) Settings
+    QGroupBox*  m_inputGroup;
+    QRadioButton* m_inputRadioNetwork;
+    QRadioButton* m_inputRadioPhysical;
+    QComboBox*  m_audioDeviceCombo;
+    QPushButton* m_refreshDevicesBtn;
 };
 
 #endif // MAINWINDOW_H

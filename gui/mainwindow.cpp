@@ -6,7 +6,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDebug>
+#include <QRadioButton>
 #include "core/controller.h"
+
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -464,6 +466,36 @@ void MainWindow::setupSettingsDialog()
     m_settingsTab->addTab(m_spectrogramSettingsWidget, "Spectrogram");
     m_settingsTab->addTab(m_networkSettingsWidget, "Network");
     m_settingsTab->addTab(m_databaseSettingsWidget, "Database");
+
+    // ==== Input Settings (FUENTE) ====
+    m_generalSettingsWidget = new QWidget;
+    QVBoxLayout* inLayout = new QVBoxLayout(m_generalSettingsWidget);
+
+    m_inputGroup = new QGroupBox("Input Source");
+    QFormLayout* inForm = new QFormLayout(m_inputGroup);
+
+    m_inputRadioNetwork  = new QRadioButton("Network stream (HTTP)");
+    m_inputRadioPhysical = new QRadioButton("Physical audio device");
+    m_inputRadioNetwork->setChecked(true); // por defecto: red
+
+    // Dispositivos físicos
+    m_audioDeviceCombo  = new QComboBox;
+    m_refreshDevicesBtn = new QPushButton("Refresh devices");
+
+    QHBoxLayout* devRow = new QHBoxLayout;
+    devRow->addWidget(m_audioDeviceCombo);
+    devRow->addWidget(m_refreshDevicesBtn);
+
+    inForm->addRow(m_inputRadioNetwork);
+    inForm->addRow(m_inputRadioPhysical);
+    inForm->addRow("Audio device:", devRow);
+
+    inLayout->addWidget(m_inputGroup);
+    inLayout->addStretch();
+
+    // Añade la pestaña
+    m_settingsTab->addTab(m_generalSettingsWidget, "Input");
+
 }
 
 void MainWindow::setupConnections()
@@ -527,6 +559,26 @@ void MainWindow::setupConnections()
         m_statusLabel->setText("Testing connection...");
         // Implementation would go here
     });
+
+    // Cambios de fuente: habilitar/inhabilitar campos
+    auto updateInputUi = [this](){
+        bool net = m_inputRadioNetwork->isChecked();
+        // Controles de Network:
+        m_urlEdit->setEnabled(net);
+        m_bufferSizeSpin->setEnabled(net);
+        m_timeoutSpin->setEnabled(net);
+        m_autoReconnectCheck->setEnabled(net);
+        m_testConnectionBtn->setEnabled(net);
+        // Controles de físico:
+        m_audioDeviceCombo->setEnabled(!net);
+        m_refreshDevicesBtn->setEnabled(!net);
+    };
+    connect(m_inputRadioNetwork,  &QRadioButton::toggled, this, updateInputUi);
+    connect(m_inputRadioPhysical, &QRadioButton::toggled, this, updateInputUi);
+
+    // Refrescar lista de dispositivos
+    connect(m_refreshDevicesBtn, &QPushButton::clicked, this, &MainWindow::refreshAudioDevices);
+
 }
 
 void MainWindow::initializeComponents()
@@ -538,7 +590,7 @@ void MainWindow::initializeComponents()
     m_ctrl->setWaveformView(m_waveformRenderer);
     m_ctrl->setSpectrogramView(m_spectrogramRenderer);
 
-    // Logs útiles
+    // Logs
     connect(m_ctrl, &Controller::databaseChanged, [](const QString& p){
         qDebug() << "[MAINWINDOW] DB:" << (p.isEmpty() ? "<none>" : p);
     });
@@ -550,8 +602,8 @@ void MainWindow::initializeComponents()
     });
     connect(m_ctrl, &Controller::audioFormatDetected, this, [this](const QAudioFormat& f){
         m_statusLabel->setText(
-            QString("Input: %1 Hz, %2 ch, %3-bit")
-                .arg(f.sampleRate()).arg(f.channelCount()).arg(f.sampleFormat()));
+            QString("Input: %1 Hz, %2 ch, fmt=%3")
+                .arg(f.sampleRate()).arg(f.channelCount()).arg(int(f.sampleFormat())));
     });
 
     // ⚠️ Fuente: RED (stream HTTP AAC)
@@ -592,7 +644,7 @@ void MainWindow::initializeComponents()
 
     m_ctrl->setNetworkConfig(cfg);
 
-    // Config inicial de waveform (opcional)
+    // Config inicial de waveform
     m_waveformConfig.blockWidth      = 4;
     m_waveformConfig.blockSpacing    = 1;
     m_waveformConfig.showPeaks       = true;
@@ -605,7 +657,7 @@ void MainWindow::initializeComponents()
     m_waveformConfig.rmsColor        = Qt::yellow;
     m_ctrl->setWaveformConfig(m_waveformConfig);
 
-    // Config inicial de spectrograma (opcional)
+    // Config inicial de spectrograma
     m_spectrogramConfig.fftSize        = 1024;
     m_spectrogramConfig.sampleRate     = 44100;
     m_spectrogramConfig.blockWidth     = 2;
@@ -616,10 +668,23 @@ void MainWindow::initializeComponents()
     m_spectrogramConfig.maxDb          = 0;
     m_ctrl->setSpectrogramConfig(m_spectrogramConfig);
 
-    // Opcional: refleja el URL en la UI
+
+    // Actualiza URL por defecto
     if (m_urlEdit) {
-        m_urlEdit->setText(cfg.url);
+        m_urlEdit->setText("http://stream.radioparadise.com/aac-128");
     }
+
+    refreshAudioDevices();              // llena m_audioDeviceCombo
+    QMetaObject::invokeMethod(this, [this](){
+        // sincroniza habilitado inicial según el radio seleccionado
+        if (m_inputRadioNetwork) {
+            if (m_inputRadioNetwork->isChecked())
+                m_inputRadioNetwork->toggled(true);
+            else
+                m_inputRadioPhysical->toggled(true);
+        }
+    }, Qt::QueuedConnection);
+
 }
 
 
@@ -713,9 +778,31 @@ void MainWindow::startStreaming()
     if (m_isStreaming) return;
 
     try {
+        // Aplica DSPConfig (si tu Controller expone setter para DSP; si no, lo usará al crear el DSPWorker)
+        // m_ctrl->setDspConfig(m_dspConfig); // (si tienes este setter)
 
-        // TODO: get current config
+        if (m_inputRadioNetwork->isChecked()) {
+            // Red
+            NetworkInputConfig net = buildNetworkConfigFromUi();
+            if (net.url.isEmpty()) {
+                QMessageBox::warning(this, "Input", "Please provide a stream URL.");
+                return;
+            }
+            m_ctrl->setNetworkConfig(net);
+            m_ctrl->setAudioSource(Controller::NetworkAudioInput);
+        } else {
+            // Físico
+            PhysicalInputConfig phy = buildPhysicalConfigFromUi();
+            int err = phy.isValid();
+            if (err != 0) {
+                QMessageBox::warning(this, "Input", QString("Invalid physical input config (%1).").arg(err));
+                return;
+            }
+            m_ctrl->setPhysicalConfig(phy);
+            m_ctrl->setAudioSource(Controller::PhysicalAudioInput);
+        }
 
+        // Estado UI
         m_isStreaming = true;
         m_isPaused = false;
 
@@ -728,6 +815,8 @@ void MainWindow::startStreaming()
         m_statusLabel->setText("Streaming started");
 
         m_uiUpdateTimer->start();
+
+        // Arranca
         m_ctrl->startCapture();
 
     } catch (const std::exception& e) {
@@ -735,6 +824,7 @@ void MainWindow::startStreaming()
                               QString("Failed to start streaming: %1").arg(e.what()));
     }
 }
+
 
 void MainWindow::stopStreaming()
 {
@@ -1004,5 +1094,72 @@ void MainWindow::selectSpectrogramColors() {
 
 void MainWindow::resetToDefaults() {
     // … implementación
+}
+
+void MainWindow::refreshAudioDevices()
+{
+    m_audioDeviceCombo->clear();
+
+    const auto devices = QMediaDevices::audioInputs(); // Qt 6
+    for (const QAudioDevice& dev : devices) {
+        // guardamos description visible y el device id en data
+        m_audioDeviceCombo->addItem(dev.description(), QVariant::fromValue(dev));
+    }
+
+    if (m_audioDeviceCombo->count() == 0) {
+        m_audioDeviceCombo->addItem("<No audio input devices>");
+        m_audioDeviceCombo->setEnabled(false);
+    } else {
+        m_audioDeviceCombo->setEnabled(m_inputRadioPhysical->isChecked());
+    }
+}
+
+NetworkInputConfig MainWindow::buildNetworkConfigFromUi() const
+{
+    NetworkInputConfig cfg;
+    cfg.url                  = m_urlEdit->text().trimmed();
+    cfg.maxBuffers           = 10;
+    cfg.dropBuffers          = true;
+    cfg.syncAudio            = false;
+    cfg.asyncSink            = false;
+
+    cfg.busTimerInterval     = 100;
+
+    cfg.connectionTimeoutMs  = m_timeoutSpin->value();
+    cfg.autoReconnect        = m_autoReconnectCheck->isChecked();
+    cfg.maxReconnectAttempts = 3;
+    cfg.reconnectDelayMs     = 2000;
+
+    cfg.targetSampleRate     = m_sampleRateSpin->value();
+    cfg.targetChannels       = 2;
+    cfg.targetFormat         = QAudioFormat::Float;
+    cfg.enforceFormat        = false;
+
+    cfg.enableDebugOutput    = true;
+    cfg.logBufferStats       = false;
+    cfg.userAgent            = "NetworkReceiver/1.0";
+
+    return cfg;
+}
+
+PhysicalInputConfig MainWindow::buildPhysicalConfigFromUi() const
+{
+    PhysicalInputConfig cfg;
+    // Dispositivo: si guardaste QAudioDevice entero:
+    int idx = m_audioDeviceCombo->currentIndex();
+    if (idx >= 0) {
+        // Puedes guardar description; el Controller/AudioReceiver podría abrir “default”
+        // o lo ideal: pasar un deviceId que reconozca tu AudioReceiver.
+        // Si tu AudioReceiver usa QString deviceId, guarda dev.description() o dev.id() serializado:
+        QVariant v = m_audioDeviceCombo->currentData();
+        if (v.isValid()) {
+            QAudioDevice dev = v.value<QAudioDevice>();
+            cfg.deviceId = dev.description(); // o QString::fromUtf8(dev.id())
+        }
+    }
+
+    cfg.sampleRate   = m_sampleRateSpin->value(); // comparte con DSP
+    cfg.channelCount = 1;                         // ajústalo si quieres estéreo
+    return cfg;
 }
 
